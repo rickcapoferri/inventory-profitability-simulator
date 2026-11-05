@@ -1,0 +1,42 @@
+# Sample schema: groups may adapt key names, documenting any changes.
+# Resolve paths relative to THIS TOML file, not the working directory.
+[files]
+products = "../data/products.csv"
+historical_sales = "../data/historical_sales.csv"
+database = "../working/inventory.sqlite"
+output_directory = "../results/policy_tuning"
+
+[simulation]
+days = 60
+seed = 2026
+currency = "EUR"
+
+[demand]
+model = "poisson"
+mean_source = "historical_daily_mean"
+
+[costs]
+holding_per_unit_per_day = 0.02
+fixed_per_product_order = 1.00
+
+# Shared defaults for all products; per-product overrides are optional designs.
+[policies.fixed_quantity]
+threshold = 20
+quantity = 40
+
+[policies.order_up_to]
+threshold = 20
+target = 60
+
+[extension]
+selected = "policy_tuning"
+
+[policy_tuning]
+policy = "fixed_quantity"
+thresholds = [10, 20, 30]
+quantities = [20, 40, 60]
+selection_runs = 20
+evaluation_runs = 20
+selection_seed = 31001
+evaluation_seed = 41001
+objective = "mean_operating_result"
