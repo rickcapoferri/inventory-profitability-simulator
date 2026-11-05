@@ -7,6 +7,17 @@ class ConfigurationError(ValueError):
     """Raised when the project configuration is invalid."""
 
 
+def load_config(config_path: str | Path) -> dict[str, Any]:
+    """Load and validate a TOML configuration file."""
+    path = Path(config_path)
+
+    with path.open("rb") as file:
+        config = tomllib.load(file)
+
+    validate_config(config)
+    return config
+
+
 def validate_config(config: dict[str, Any]) -> None:
     """Validate compulsory configuration values."""
     try:
@@ -21,13 +32,3 @@ def validate_config(config: dict[str, Any]) -> None:
             "simulation.days must be a positive integer"
         )
 
-
-def load_config(config_path: str | Path) -> dict[str, Any]:
-    """Load and validate a TOML configuration file."""
-    path = Path(config_path)
-
-    with path.open("rb") as file:
-        config = tomllib.load(file)
-
-    validate_config(config)
-    return config
