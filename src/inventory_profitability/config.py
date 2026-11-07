@@ -32,3 +32,5 @@ def validate_config(config: dict[str, Any]) -> None:
             "simulation.days must be a positive integer"
         )
 
+
+
