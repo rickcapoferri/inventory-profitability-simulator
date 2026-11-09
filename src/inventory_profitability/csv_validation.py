@@ -10,11 +10,10 @@ def product_identifiers_unique(products) -> None:
         raise ValueError(f"Product identifier {products} is not unique.")
 
 def costs_and_selling_prices_positive(products) -> None:
-    if products['cost'].lt(0).any():
-        raise ValueError(f"Cost values must be positive. Found negative values: {products['cost'][products['cost'] < 0]}")
-    if products['selling_price'].lt(0).any():
-        raise ValueError(f"Selling price values must be positive. Found negative values: {products['selling_price'][products['selling_price'] < 0]}")
-
+    if products['cost'].lt(1).any() | products['selling_price'].lt(1).any():
+        raise ValueError(f"Cost and selling price values must be positive.")
+    if type(products['cost']) != int or type(products['selling_price']) != int:
+        raise ValueError(f"Cost and selling price values must be integers.")
 def stock_and_sales_quantities_non_negative(products, sales) -> None:
     if products['stock'].lt(0).any():
         raise ValueError(f"Stock values must be non-negative. Found negative values: {products['stock'][products['stock'] < 0]}")
