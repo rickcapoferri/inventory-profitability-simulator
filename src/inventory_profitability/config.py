@@ -77,7 +77,10 @@ def validate_extension(config: dict[str, Any]) -> None:
             "extension.selected must be '', 'promotion', 'storage', or 'policy_tuning'"
         )
     if selected == "promotion":
-        _validate_promotion(_require_section(config, "promotion"))
+        simulation_days = config["simulation"]["days"]
+        _validate_promotion(
+            _require_section(config, "promotion"), simulation_days
+        )
     elif selected == "storage":
         storage = _require_section(config, "storage")
         _require_int(storage, "capacity_units", "storage", minimum=0)
@@ -153,7 +156,9 @@ def _require_string(
     return value
 
 
-def _validate_promotion(promotion: dict[str, Any]) -> None:
+def _validate_promotion(
+    promotion: dict[str, Any], simulation_days: int
+) -> None:
     product_ids = promotion.get("product_ids")
     if not isinstance(product_ids, list) or not product_ids or not all(
         isinstance(product_id, str) and product_id.strip() for product_id in product_ids
@@ -163,6 +168,10 @@ def _validate_promotion(promotion: dict[str, Any]) -> None:
     end = _require_int(promotion, "end_day", "promotion", minimum=1)
     if end < start:
         raise ConfigurationError("promotion.end_day must be on or after start_day")
+    if end > simulation_days:
+        raise ConfigurationError(
+            "promotion.end_day must not exceed simulation.days"
+        )
     discount = _require_number(promotion, "discount_fraction", "promotion", minimum=0)
     if discount >= 1:
         raise ConfigurationError("promotion.discount_fraction must be less than 1")
