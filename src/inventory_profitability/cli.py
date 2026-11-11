@@ -15,6 +15,7 @@ from inventory_profitability.database import (
     historical_sales_by_product,
     import_historical_data,
 )
+from inventory_profitability.demand import generate_demand
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -41,6 +42,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         database = config["files"]["database"]
         import_historical_data(database, products, sales)
         summary = historical_sales_by_product(database)
+        product_ids, demand = generate_demand(
+            summary, config["simulation"]["days"], config["simulation"]["seed"]
+        )
     except (
         OSError,
         sqlite3.Error,
@@ -61,4 +65,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"{row['cost_of_goods_sold']:.2f} | {row['gross_profit']:.2f}"
         )
     print(f"Database: {database}")
+    print(
+        f"Generated demand: {demand.shape[0]} days x {len(product_ids)} products "
+        f"(seed {config['simulation']['seed']})."
+    )
     return 0

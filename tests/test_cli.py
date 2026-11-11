@@ -48,6 +48,7 @@ selected = ""
     assert exit_code == 0
     assert "Imported 8 products and 720 sales rows." in output
     assert "P001 | 90 | 733" in output
+    assert "Generated demand: 60 days x 8 products (seed 2026)." in output
     assert database_path.is_file()
 
 

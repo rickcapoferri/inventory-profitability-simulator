@@ -20,6 +20,17 @@ files, imports their rows into the configured SQLite database, and prints the
 historical sales summary by product. Re-running the command updates matching
 product and date/product rows instead of duplicating them.
 
+The command also generates Poisson demand using NumPy, the historical daily
+mean of each product, and the simulation length and seed from the TOML file.
+Historical sales are treated as demand under the assignment's assumption of
+no historical stock shortages. Demand is modelled independently across days
+and products, with a constant mean for each product.
+
+`generate_demand(summary, days, seed)` returns sorted product IDs and a
+read-only NumPy array with one row per day and one column per product.
+The same inputs and seed reproduce the array. Policy comparisons will reuse
+one generated array so demand differences do not bias the comparison.
+
 ## CSV validation
 
 Validation checks required columns and values, unique product identifiers,
