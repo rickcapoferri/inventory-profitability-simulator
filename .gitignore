@@ -221,3 +221,10 @@ __marimo__/
 
 # macOS metadata
 .DS_Store
+
+# Local database and generated results
+/inventory.sqlite
+/inventory.sqlite-journal
+/inventory.sqlite-wal
+/inventory.sqlite-shm
+/results/

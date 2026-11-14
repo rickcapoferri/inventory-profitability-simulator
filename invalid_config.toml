@@ -1,13 +1,13 @@
 # Sample schema: groups may adapt key names, documenting any changes.
 # Resolve paths relative to THIS TOML file, not the working directory.
 [files]
-products = "../data/products.csv"
-historical_sales = "../data/historical_sales.csv"
-database = "../working/inventory.sqlite"
-output_directory = "../results/core"
+products = "products.csv"
+historical_sales = "historical_sales.csv"
+database = "inventory.sqlite"
+output_directory = "results/invalid"
 
 [simulation]
-days = 60
+days = 0
 seed = 2026
 currency = "EUR"
 
@@ -30,4 +30,3 @@ target = 60
 
 [extension]
 selected = ""
-# Core development only. For final submission choose exactly one extension.

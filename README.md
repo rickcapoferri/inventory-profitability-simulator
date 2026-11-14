@@ -1,45 +1,99 @@
-# inventory-profitability-simulator
-Python inventory and profitability simulator developed for an Advanced Python Programming course. Uses NumPy and SQLite to analyse historical sales, simulate demand, and compare replenishment policies and their impact on profitability.
+# Inventory profitability simulator
 
-## Run the data import and historical summary
+Advanced Python coursework. The Python modules, TOML configurations, sample CSV
+files, and tests are in the project folder, with no nested source package.
 
-From the repository root, run:
+## Setup and execution
+
+Use Python 3.12 or later: the pinned NumPy version requires it. Tested locally
+with Python 3.14. No Pandas or graphical interface is needed.
+
+With your Python environment activated, run from the project folder:
 
 ```bash
-PYTHONPATH=src python -m inventory_profitability
+python -m pip install -r requirements.txt
+python main.py
 ```
 
-To select a different TOML file:
+The default is `config.toml` beside `main.py`. To choose another configuration:
 
 ```bash
-PYTHONPATH=src python -m inventory_profitability --config config/core.toml
+python main.py promotion.toml
+python main.py --help
 ```
 
-The command loads and validates the TOML configuration, validates both CSV
-files, imports their rows into the configured SQLite database, and prints the
-historical sales summary by product. Re-running the command updates matching
-product and date/product rows instead of duplicating them.
+Use `python3` instead if that is your system's Python command.
+Paths inside TOML are resolved relative to that file, so moving the whole
+project folder preserves the sample configuration.
 
-The command also generates Poisson demand using NumPy, the historical daily
-mean of each product, and the simulation length and seed from the TOML file.
-Historical sales are treated as demand under the assignment's assumption of
-no historical stock shortages. Demand is modelled independently across days
-and products, with a constant mean for each product.
+The command validates the inputs, imports historical data into SQLite, prints
+the historical summary, and generates Poisson demand. It does not yet run an
+inventory simulation. The extension TOMLs define example settings; the actual
+experiments still need implementing.
 
-`generate_demand(summary, days, seed)` returns sorted product IDs and a
-read-only NumPy array with one row per day and one column per product.
-The same inputs and seed reproduce the array. Policy comparisons will reuse
-one generated array so demand differences do not bias the comparison.
+## Files
 
-## CSV validation
+| File | Responsibility |
+|---|---|
+| `main.py` | Run the steps; optional TOML filename from `sys.argv` |
+| `config.py` | Read TOML; validate settings and paths |
+| `validation.py` | Load and validate product and sales CSV records |
+| `database.py` | SQLite tables, imports, and historical SQL queries |
+| `simulation.py` | Demand generation and the base policy/two subclasses |
+| `test_project.py` | Automated tests grouped by component |
 
-Validation checks required columns and values, unique product identifiers,
-finite positive prices, non-negative integer quantities, ISO dates, known
-products, unique product-date pairs, and a complete shared history of at least
-30 consecutive days. Missing sales records must be supplied explicitly,
-including zero-sales rows. Invalid input raises `CSVValidationError` with an
-error report. Validation does not write to the database.
+This uses the lesson concepts: loops and collections (L01-L04), functions (L05),
+plain modules (L06), classes/inheritance (L07-L08), SQL (L09), and NumPy arrays
+and seeded randomness (L11). Required file formats also need standard-library
+tools such as `csv`, `tomllib`, `pathlib`, and `sqlite3`.
+`Decimal` is used only for reliable conversion of money to cents.
 
-`products_csv_validation(products_file, sales_file)` returns validated product
-and sales rows as lists of dictionaries, with numeric columns converted to
-numbers. Omitting the arguments uses the sample files in `data/`.
+## Data and import rules
+
+Product columns:
+`product_id,name,category,purchase_cost,selling_price,initial_stock`.
+Sales columns: `date,product_id,units_sold`.
+
+Validation checks columns and missing values, unique product IDs, finite positive
+prices, non-negative integer quantities, ISO dates (`YYYY-MM-DD`), valid product
+references, unique product/date pairs, and the same complete history of at least
+30 consecutive days for every product. Zero sales require explicit rows.
+Quantity fields use integer notation (`10`, not `10.0`).
+Deliberately invalid examples are described in `validation_examples.txt`.
+
+SQLite stores unit prices in integer cents using `ROUND_HALF_UP` when necessary.
+A price that rounds to zero cents is rejected. SQL aggregates cents before
+returning totals in currency units. Historical revenues use the catalogue's
+prices throughout the historical window.
+
+Each import replaces the active catalogue and history in one transaction.
+Repeated imports do not duplicate records; changed CSVs replace the old dataset,
+including dates/products absent from the new input. A failed import rolls back
+to the previous data. There is no archive of past input datasets yet.
+
+Historical sales are treated as demand under the no-stock-shortages assumption.
+`generate_demand(summary, days, seed)` returns sorted product IDs and a read-only
+NumPy array (rows = days, columns = products). Poisson demand uses a constant
+historical daily mean per product and independent days/products. Fixed inputs,
+seed, and NumPy version reproduce the array. Both policies must reuse one array.
+
+## Tests
+
+```bash
+python -m pytest -q test_project.py
+```
+
+Tests use temporary folders and databases. No installed project package or
+`PYTHONPATH` setting is needed.
+
+## Remaining work and delivery
+
+The daily simulation engine, comparisons, simulation-result storage, report
+exports (including `validation_report.txt`), and exactly one extension are still
+required. Catalogue/configuration cross-checks will be connected with the
+selected extension.
+
+Deliver the root source, tests, inputs, settings, and documentation. Exclude
+`.venv`, Git metadata, caches, and `tmp` (reference PDF renders).
+The final submission also needs representative outputs, design/contribution/
+AI-use notes, and slides.

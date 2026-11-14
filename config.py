@@ -1,14 +1,13 @@
 import tomllib
 from math import isfinite
 from pathlib import Path
-from typing import Any
 
 
 class ConfigurationError(ValueError):
     """Raised when the project configuration is invalid."""
 
 
-def load_config(config_path: str | Path) -> dict[str, Any]:
+def load_config(config_path: str | Path) -> dict:
     """Load and validate a TOML configuration file."""
     path = Path(config_path)
 
@@ -20,7 +19,7 @@ def load_config(config_path: str | Path) -> dict[str, Any]:
     return config
 
 
-def validate_config(config: dict[str, Any]) -> None:
+def validate_config(config: dict) -> None:
     """Run the validator for each section of the configuration."""
     validate_simulation(config)
     validate_demand(config)
@@ -29,14 +28,14 @@ def validate_config(config: dict[str, Any]) -> None:
     validate_extension(config)
 
 
-def validate_simulation(config: dict[str, Any]) -> None:
+def validate_simulation(config: dict) -> None:
     simulation = _require_section(config, "simulation")
     _require_int(simulation, "days", "simulation", minimum=1)
     _require_int(simulation, "seed", "simulation", minimum=0)
     _require_string(simulation, "currency", "simulation")
 
 
-def validate_demand(config: dict[str, Any]) -> None:
+def validate_demand(config: dict) -> None:
     demand = _require_section(config, "demand")
     if _require_string(demand, "model", "demand") != "poisson":
         raise ConfigurationError("demand.model must be 'poisson'")
@@ -46,13 +45,13 @@ def validate_demand(config: dict[str, Any]) -> None:
         )
 
 
-def validate_costs(config: dict[str, Any]) -> None:
+def validate_costs(config: dict) -> None:
     costs = _require_section(config, "costs")
     _require_number(costs, "holding_per_unit_per_day", "costs", minimum=0)
     _require_number(costs, "fixed_per_product_order", "costs", minimum=0)
 
 
-def validate_policies(config: dict[str, Any]) -> None:
+def validate_policies(config: dict) -> None:
     policies = _require_section(config, "policies")
     fixed = _require_section(policies, "fixed_quantity", "policies")
     _require_int(fixed, "threshold", "policies.fixed_quantity", minimum=0)
@@ -69,7 +68,7 @@ def validate_policies(config: dict[str, Any]) -> None:
         )
 
 
-def validate_extension(config: dict[str, Any]) -> None:
+def validate_extension(config: dict) -> None:
     extension = _require_section(config, "extension")
     selected = _require_string(extension, "selected", "extension", allow_empty=True)
     if selected not in {"", "promotion", "storage", "policy_tuning"}:
@@ -85,13 +84,11 @@ def validate_extension(config: dict[str, Any]) -> None:
         storage = _require_section(config, "storage")
         _require_int(storage, "capacity_units", "storage", minimum=0)
         rules = storage.get("allocation_rules")
-        if not isinstance(rules, list) or not rules or not all(
-            isinstance(rule, str) and rule.strip() for rule in rules
-        ):
+        if not isinstance(rules, list) or not rules:
             raise ConfigurationError("storage.allocation_rules must be a non-empty list of strings")
         allowed_rules = {"product_id_ascending", "unit_margin_descending"}
         for rule in rules:
-            if rule not in allowed_rules:
+            if not isinstance(rule, str) or rule not in allowed_rules:
                 raise ConfigurationError(
                     f"Unsupported storage allocation rule: {rule!r}. "
                     "Use 'product_id_ascending' or 'unit_margin_descending'."
@@ -101,8 +98,8 @@ def validate_extension(config: dict[str, Any]) -> None:
 
 
 def _require_section(
-    values: dict[str, Any], key: str, parent: str = ""
-) -> dict[str, Any]:
+    values: dict, key: str, parent: str = ""
+) -> dict:
     name = f"{parent}.{key}" if parent else key
     section = values.get(key)
     if section is None:
@@ -113,7 +110,7 @@ def _require_section(
 
 
 def _require_int(
-    values: dict[str, Any], key: str, section: str, minimum: int
+    values: dict, key: str, section: str, minimum: int
 ) -> int:
     name = f"{section}.{key}"
     value = values.get(key)
@@ -126,7 +123,7 @@ def _require_int(
 
 
 def _require_number(
-    values: dict[str, Any], key: str, section: str, minimum: float
+    values: dict, key: str, section: str, minimum: float
 ) -> float:
     name = f"{section}.{key}"
     value = values.get(key)
@@ -145,25 +142,29 @@ def _require_number(
 
 
 def _require_string(
-    values: dict[str, Any], key: str, section: str, allow_empty: bool = False
+    values: dict, key: str, section: str, allow_empty: bool = False
 ) -> str:
     name = f"{section}.{key}"
     value = values.get(key)
     if key not in values:
         raise ConfigurationError(f"Missing required configuration: {name}")
     if not isinstance(value, str) or (not allow_empty and not value.strip()):
-        raise ConfigurationError(f"{name} must be a {'string' if allow_empty else 'non-empty string'}")
+        requirement = "non-empty string"
+        if allow_empty:
+            requirement = "string"
+        raise ConfigurationError(f"{name} must be a {requirement}")
     return value
 
 
 def _validate_promotion(
-    promotion: dict[str, Any], simulation_days: int
+    promotion: dict, simulation_days: int
 ) -> None:
     product_ids = promotion.get("product_ids")
-    if not isinstance(product_ids, list) or not product_ids or not all(
-        isinstance(product_id, str) and product_id.strip() for product_id in product_ids
-    ):
+    if not isinstance(product_ids, list) or not product_ids:
         raise ConfigurationError("promotion.product_ids must be a non-empty list of strings")
+    for product_id in product_ids:
+        if not isinstance(product_id, str) or not product_id.strip():
+            raise ConfigurationError("promotion.product_ids must contain non-empty strings")
     start = _require_int(promotion, "start_day", "promotion", minimum=1)
     end = _require_int(promotion, "end_day", "promotion", minimum=1)
     if end < start:
@@ -178,7 +179,7 @@ def _validate_promotion(
     _require_number(promotion, "demand_multiplier", "promotion", minimum=0)
 
 
-def _validate_policy_tuning(tuning: dict[str, Any]) -> None:
+def _validate_policy_tuning(tuning: dict) -> None:
     """Validate a grid of thresholds paired with quantities or targets.
 
     Every threshold is combined with every quantity or target. For order-up-to
@@ -195,11 +196,14 @@ def _validate_policy_tuning(tuning: dict[str, Any]) -> None:
         if not isinstance(values, list) or not values:
             raise ConfigurationError(f"policy_tuning.{key} must be a non-empty list")
         minimum = 1 if key == "quantities" else 0
-        if any(isinstance(value, bool) or not isinstance(value, int) or value < minimum for value in values):
-            qualifier = "positive" if minimum == 1 else "non-negative"
-            raise ConfigurationError(
-                f"policy_tuning.{key} must contain {qualifier} integers"
-            )
+        for value in values:
+            if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+                qualifier = "non-negative"
+                if minimum == 1:
+                    qualifier = "positive"
+                raise ConfigurationError(
+                    f"policy_tuning.{key} must contain {qualifier} integers"
+                )
     if policy == "order_up_to" and min(tuning["targets"]) < max(tuning["thresholds"]):
         raise ConfigurationError(
             "Every policy_tuning.targets value must be at least every threshold "
@@ -214,7 +218,7 @@ def _validate_policy_tuning(tuning: dict[str, Any]) -> None:
 
 
 def validate_files(
-    config: dict[str, Any],
+    config: dict,
     config_path: str | Path,
 ) -> dict[str, Path]:
     """Validate file settings and resolve paths relative to the TOML directory.
@@ -266,5 +270,3 @@ def validate_files(
         raise ConfigurationError("files.output_directory must identify a directory")
 
     return resolved_paths
-
-

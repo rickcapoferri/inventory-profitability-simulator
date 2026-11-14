@@ -1,9 +1,0 @@
-product_id,name,category,purchase_cost,selling_price,initial_stock
-P001,Notebook,Stationery,1.20,2.50,40
-P002,Pen,Stationery,0.30,0.80,100
-P003,Pencil,Stationery,0.20,0.60,60
-P004,Folder,Office,0.70,1.80,25
-P005,Stapler,Office,3.00,6.50,10
-P006,Water bottle,Accessories,4.00,9.00,12
-P007,Canvas bag,Accessories,2.50,6.00,15
-P008,Desk organiser,Office,5.00,11.00,8

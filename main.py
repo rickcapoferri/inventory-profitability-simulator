@@ -1,40 +1,36 @@
 """Command-line workflow for importing data and showing historical summaries."""
 
-import argparse
 import sqlite3
 import sys
 from pathlib import Path
-from typing import Sequence
 
-from inventory_profitability.config import ConfigurationError, load_config
-from inventory_profitability.csv_validation import (
+from config import ConfigurationError, load_config
+from validation import (
     CSVValidationError,
     products_csv_validation,
 )
-from inventory_profitability.database import (
+from database import (
     historical_sales_by_product,
     import_historical_data,
 )
-from inventory_profitability.demand import generate_demand
+from simulation import generate_demand
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Validate inventory data, import it into SQLite, and show historical results."
-    )
-    parser.add_argument(
-        "--config",
-        type=Path,
-        default=Path("config/core.toml"),
-        help="TOML configuration file (default: config/core.toml)",
-    )
-    return parser
-
-
-def main(argv: Sequence[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+def main(argv: list[str] | None = None) -> int:
+    """Run the workflow using an optional TOML filename."""
+    if argv is None:
+        argv = sys.argv[1:]
+    if argv == ["--help"] or argv == ["-h"]:
+        print("Usage: python main.py [config.toml]")
+        return 0
+    if len(argv) > 1:
+        print("Usage: python main.py [config.toml]", file=sys.stderr)
+        return 1
+    config_path = Path(__file__).resolve().parent / "config.toml"
+    if argv:
+        config_path = Path(argv[0])
     try:
-        config = load_config(args.config)
+        config = load_config(config_path)
         products, sales = products_csv_validation(
             config["files"]["products"],
             config["files"]["historical_sales"],
@@ -70,3 +66,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"(seed {config['simulation']['seed']})."
     )
     return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
