@@ -1,13 +1,13 @@
 # Sample schema: groups may adapt key names, documenting any changes.
 # Resolve paths relative to THIS TOML file, not the working directory.
 [files]
-products = "products.csv"
-historical_sales = "historical_sales.csv"
-database = "inventory.sqlite"
-output_directory = "results/policy_tuning"
+products = "../data/products.csv"
+historical_sales = "../data/historical_sales.csv"
+database = "../working/inventory.sqlite"
+output_directory = "../results/invalid"
 
 [simulation]
-days = 60
+days = 0
 seed = 2026
 currency = "EUR"
 
@@ -29,14 +29,4 @@ threshold = 20
 target = 60
 
 [extension]
-selected = "policy_tuning"
-
-[policy_tuning]
-policy = "fixed_quantity"
-thresholds = [10, 20, 30]
-quantities = [20, 40, 60]
-selection_runs = 20
-evaluation_runs = 20
-selection_seed = 31001
-evaluation_seed = 41001
-objective = "mean_operating_result"
+selected = ""

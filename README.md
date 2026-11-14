@@ -1,7 +1,20 @@
 # Inventory profitability simulator
 
-Advanced Python coursework. The Python modules, TOML configurations, sample CSV
-files, and tests are in the project folder, with no nested source package.
+Advanced Python coursework. Python modules and tests are in the project root,
+with no nested source package. The supplied data keep the professor's layout:
+
+```text
+main.py, config.py, validation.py, database.py, simulation.py, test_project.py
+config/       TOML configurations
+data/         product and sales CSV files
+checks/       expected historical summaries
+validation/   deliberately invalid inputs
+working/      database created when the program runs
+results/      configured destination for future report exports
+```
+
+`README.txt` is the original student-sample guidance. This `README.md` explains
+how to run our implementation.
 
 ## Setup and execution
 
@@ -15,10 +28,10 @@ python -m pip install -r requirements.txt
 python main.py
 ```
 
-The default is `config.toml` beside `main.py`. To choose another configuration:
+The default is `config/core.toml`. To choose another configuration:
 
 ```bash
-python main.py promotion.toml
+python main.py config/promotion.toml
 python main.py --help
 ```
 
@@ -59,7 +72,7 @@ prices, non-negative integer quantities, ISO dates (`YYYY-MM-DD`), valid product
 references, unique product/date pairs, and the same complete history of at least
 30 consecutive days for every product. Zero sales require explicit rows.
 Quantity fields use integer notation (`10`, not `10.0`).
-Deliberately invalid examples are described in `validation_examples.txt`.
+Deliberately invalid examples are described in `validation/README.txt`.
 
 SQLite stores unit prices in integer cents using `ROUND_HALF_UP` when necessary.
 A price that rounds to zero cents is rejected. SQL aggregates cents before
@@ -93,7 +106,8 @@ exports (including `validation_report.txt`), and exactly one extension are still
 required. Catalogue/configuration cross-checks will be connected with the
 selected extension.
 
-Deliver the root source, tests, inputs, settings, and documentation. Exclude
+Deliver the root source and tests, documentation, and the `data/`, `config/`,
+`checks/`, and `validation/` folders with their structure intact. Exclude
 `.venv`, Git metadata, caches, and `tmp` (reference PDF renders).
 The final submission also needs representative outputs, design/contribution/
 AI-use notes, and slides.

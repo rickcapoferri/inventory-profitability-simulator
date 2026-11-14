@@ -21,12 +21,12 @@ def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
     if argv == ["--help"] or argv == ["-h"]:
-        print("Usage: python main.py [config.toml]")
+        print("Usage: python main.py [config/core.toml]")
         return 0
     if len(argv) > 1:
-        print("Usage: python main.py [config.toml]", file=sys.stderr)
+        print("Usage: python main.py [config/core.toml]", file=sys.stderr)
         return 1
-    config_path = Path(__file__).resolve().parent / "config.toml"
+    config_path = Path(__file__).resolve().parent / "config" / "core.toml"
     if argv:
         config_path = Path(argv[0])
     try:

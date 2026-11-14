@@ -6,8 +6,8 @@ from math import isfinite
 from pathlib import Path
 
 PROJECT_DIRECTORY = Path(__file__).resolve().parent
-PRODUCTS_PATH = PROJECT_DIRECTORY / "products.csv"
-HISTORICAL_SALES_PATH = PROJECT_DIRECTORY / "historical_sales.csv"
+PRODUCTS_PATH = PROJECT_DIRECTORY / "data" / "products.csv"
+HISTORICAL_SALES_PATH = PROJECT_DIRECTORY / "data" / "historical_sales.csv"
 
 PRODUCT_COLUMNS = (
     "product_id", "name", "category", "purchase_cost", "selling_price", "initial_stock"

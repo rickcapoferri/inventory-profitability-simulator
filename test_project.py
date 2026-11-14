@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parent
 
 
 def test_load_core_config() -> None:
-    config_path = ROOT / "config.toml"
+    config_path = ROOT / "config" / "core.toml"
 
     config = load_config(config_path)
 
@@ -36,7 +36,7 @@ def test_load_core_config() -> None:
 
 
 def test_rejects_zero_simulation_days() -> None:
-    config_path = ROOT / "invalid_config.toml"
+    config_path = ROOT / "validation" / "invalid_config.toml"
 
     with pytest.raises(
         ConfigurationError,
@@ -46,7 +46,7 @@ def test_rejects_zero_simulation_days() -> None:
 
 
 def test_rejects_promotion_ending_after_simulation() -> None:
-    config = load_config(ROOT / "promotion.toml")
+    config = load_config(ROOT / "config" / "promotion.toml")
     config["simulation"]["days"] = 20
 
     with pytest.raises(
@@ -74,8 +74,8 @@ def write_rows(path, rows, columns=None):
 
 def sample_rows():
     return (
-        read_rows(ROOT / "products.csv"),
-        read_rows(ROOT / "historical_sales.csv"),
+        read_rows(ROOT / "data" / "products.csv"),
+        read_rows(ROOT / "data" / "historical_sales.csv"),
     )
 
 
@@ -96,9 +96,9 @@ def test_valid_inputs_from_another_directory(tmp_path, monkeypatch):
     ("sales_unknown_product.csv", "unknown products"),
 ])
 def test_supplied_invalid_examples(filename, expected):
-    products = ROOT / "products.csv"
-    sales = ROOT / "historical_sales.csv"
-    invalid = ROOT / filename
+    products = ROOT / "data" / "products.csv"
+    sales = ROOT / "data" / "historical_sales.csv"
+    invalid = ROOT / "validation" / filename
     if filename.startswith("products"):
         products = invalid
     else:
@@ -190,8 +190,8 @@ def test_preserves_identifiers_and_accepts_zero_sales(tmp_path):
 
 def load_sample_data():
     return products_csv_validation(
-        ROOT / "products.csv",
-        ROOT / "historical_sales.csv",
+        ROOT / "data" / "products.csv",
+        ROOT / "data" / "historical_sales.csv",
     )
 
 
@@ -202,7 +202,7 @@ def test_imports_data_and_matches_expected_product_summary(tmp_path):
     import_historical_data(database, products, sales)
     actual = historical_sales_by_product(database)
 
-    with (ROOT / "expected_historical_by_product.csv").open(
+    with (ROOT / "checks" / "expected_historical_by_product.csv").open(
         encoding="utf-8", newline=""
     ) as file:
         expected = list(csv.DictReader(file))
@@ -353,8 +353,8 @@ def test_cli_imports_and_prints_historical_summary(tmp_path, capsys):
     database_path = tmp_path / "nested" / "inventory.sqlite"
     config_path.write_text(
         f'''[files]
-products = "{(ROOT / "products.csv").as_posix()}"
-historical_sales = "{(ROOT / "historical_sales.csv").as_posix()}"
+products = "{(ROOT / "data" / "products.csv").as_posix()}"
+historical_sales = "{(ROOT / "data" / "historical_sales.csv").as_posix()}"
 database = "{database_path.as_posix()}"
 output_directory = "{(tmp_path / "results").as_posix()}"
 
@@ -440,7 +440,7 @@ def test_failed_replacement_preserves_previous_data(tmp_path):
     ("duplicate_header", "duplicate column"),
 ])
 def test_malformed_csv_structure(tmp_path, case, expected):
-    with (ROOT / "products.csv").open(newline="", encoding="utf-8") as file:
+    with (ROOT / "data" / "products.csv").open(newline="", encoding="utf-8") as file:
         rows = list(csv.reader(file))
     if case == "extra_field":
         rows[1].append("unexpected value")
@@ -453,4 +453,4 @@ def test_malformed_csv_structure(tmp_path, case, expected):
         csv.writer(file).writerows(rows)
 
     with pytest.raises(CSVValidationError, match=expected):
-        products_csv_validation(path, ROOT / "historical_sales.csv")
+        products_csv_validation(path, ROOT / "data" / "historical_sales.csv")
