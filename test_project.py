@@ -1,6 +1,8 @@
 """Tests for configuration, CSV validation, SQLite, demand, policies, and CLI."""
 
 import csv
+import json
+from copy import deepcopy
 import sqlite3
 from datetime import date, timedelta
 from pathlib import Path
@@ -15,8 +17,10 @@ from database import (
     historical_revenue_by_category,
     historical_sales_by_product,
     import_historical_data,
+    save_simulation_runs,
+    saved_simulation_summary,
 )
-from simulation import FixedQuantityPolicy, OrderUpToPolicy, generate_demand
+from simulation import FixedQuantityPolicy, OrderUpToPolicy, generate_demand, simulate_inventory
 from main import main
 
 ROOT = Path(__file__).resolve().parent
@@ -392,6 +396,9 @@ selected = ""
     assert "Imported 8 products and 720 sales rows." in output
     assert "P001 | 90 | 733" in output
     assert "Generated demand: 60 days x 8 products (seed 2026)." in output
+    assert "Core simulation comparison:" in output
+    assert "fixed_quantity |" in output
+    assert "order_up_to |" in output
     assert database_path.is_file()
 
 
@@ -405,6 +412,7 @@ def test_cli_reports_invalid_config_without_traceback(tmp_path, capsys):
     assert exit_code == 1
     assert "Error:" in captured.err
     assert "Traceback" not in captured.err
+    assert "FAILED" in (tmp_path / "validation_results" / "validation_report.txt").read_text()
 
 
 def test_replacing_history_removes_old_dates(tmp_path):
@@ -454,3 +462,259 @@ def test_malformed_csv_structure(tmp_path, case, expected):
 
     with pytest.raises(CSVValidationError, match=expected):
         products_csv_validation(path, ROOT / "data" / "historical_sales.csv")
+
+
+# daily simulation: independently calculated examples
+
+
+def simulation_product():
+    return {"product_id": "A", "initial_stock": 3,
+            "purchase_cost": 1.20, "selling_price": 2.50}
+
+
+def test_daily_arrivals_lost_sales_and_finances():
+    product = simulation_product()
+    demand = np.array([[5], [1], [0]])
+    original = demand.copy()
+    result = simulate_inventory(
+        [product], ["A"], demand, FixedQuantityPolicy(2, 4), 0.02, 1.00
+    )
+    first, second, third = result["daily_results"]
+    assert (first["received_units"], first["units_sold"], first["units_lost"]) == (0, 3, 2)
+    assert (first["closing_stock"], first["ordered_units"]) == (0, 4)
+    assert (second["received_units"], second["units_sold"], second["closing_stock"]) == (4, 1, 3)
+    assert third["units_sold"] == 0  # Yesterday's lost demand is never backlogged.
+    totals = result["shop_summary"]
+    assert totals["revenue_cents"] == 1000
+    assert totals["cost_of_goods_sold_cents"] == 480
+    assert totals["gross_profit_cents"] == 520
+    assert totals["holding_cost_cents"] == 12
+    assert totals["ordering_cost_cents"] == 100
+    assert totals["operating_result_cents"] == 408
+    assert totals["fulfilment_rate"] == pytest.approx(4 / 6)
+    assert totals["final_stock"] == 3
+    assert totals["final_inventory_value_cents"] == 360
+    assert totals["outstanding_orders"] == 0
+    assert np.array_equal(demand, original)
+    assert product == simulation_product()
+
+
+def test_final_day_orders_are_charged_but_not_received():
+    result = simulate_inventory(
+        [simulation_product()], ["A"], np.array([[5], [4]]),
+        FixedQuantityPolicy(2, 4), 0.02, 1.00,
+    )
+    totals = result["shop_summary"]
+    assert totals["ordered_units"] == 8
+    assert totals["received_units"] == 4
+    assert totals["outstanding_orders"] == 4
+    assert totals["final_stock"] == 0
+    assert totals["final_inventory_value_cents"] == 0
+    assert totals["ordering_cost_cents"] == 200
+    assert totals["operating_result_cents"] == 710
+
+
+@pytest.mark.parametrize("policy", [FixedQuantityPolicy(2, 4), OrderUpToPolicy(2, 6)])
+def test_multi_product_stock_conservation_and_shared_demand(policy):
+    products = [simulation_product(), {
+        "product_id": "B", "initial_stock": 1,
+        "purchase_cost": 0.30, "selling_price": 0.80,
+    }]
+    # Columns intentionally differ from catalogue order.
+    demand = np.array([[2, 5], [10, 2], [0, 0]])
+    demand.setflags(write=False)
+    result = simulate_inventory(products, ["B", "A"], demand, policy, 0.02, 1.00)
+    previous_stock = {"A": 3, "B": 1}
+    previous_orders = {"A": 0, "B": 0}
+    for row in result["daily_results"]:
+        pid = row["product_id"]
+        assert row["opening_stock"] == previous_stock[pid]
+        assert row["received_units"] == previous_orders[pid]
+        assert row["available_stock"] == row["opening_stock"] + row["received_units"]
+        assert row["closing_stock"] == row["available_stock"] - row["units_sold"]
+        assert row["closing_stock"] >= 0
+        assert row["demand"] == row["units_sold"] + row["units_lost"]
+        previous_stock[pid] = row["closing_stock"]
+        previous_orders[pid] = row["ordered_units"]
+    assert result["daily_results"][0]["units_sold"] == 1
+    assert result["daily_results"][1]["units_sold"] == 3
+    assert result["daily_results"][0]["ordering_cost_cents"] == 100
+    assert result["daily_results"][1]["ordering_cost_cents"] == 100
+    totals = result["shop_summary"]
+    assert 4 + totals["received_units"] == totals["units_sold"] + totals["final_stock"]
+    assert totals["ordered_units"] == totals["received_units"] + totals["outstanding_orders"]
+    for key in ("revenue_cents", "operating_result_cents", "final_inventory_value_cents"):
+        assert totals[key] == sum(row[key] for row in result["product_summary"])
+    assert result == simulate_inventory(products, ["B", "A"], demand, policy, 0.02, 1.00)
+
+
+def test_zero_demand_and_zero_order_have_no_fulfilment_rate_or_ordering_cost():
+    result = simulate_inventory(
+        [simulation_product()], ["A"], np.zeros((2, 1), dtype=int),
+        FixedQuantityPolicy(0, 4), 0.02, 1.00,
+    )
+    totals = result["shop_summary"]
+    assert totals["fulfilment_rate"] is None
+    assert result["product_summary"][0]["fulfilment_rate"] is None
+    assert totals["ordering_cost_cents"] == 0
+    assert totals["ordered_units"] == 0
+    assert totals["operating_result_cents"] == -12
+
+
+def test_simulation_money_rounds_unit_rates_half_up():
+    product = simulation_product()
+    product.update(purchase_cost=1.205, selling_price=2.505)
+    result = simulate_inventory(
+        [product], ["A"], np.array([[1]]), FixedQuantityPolicy(0, 4), 0.025, 0,
+    )
+    totals = result["shop_summary"]
+    assert totals["revenue_cents"] == 251
+    assert totals["cost_of_goods_sold_cents"] == 121
+    assert totals["holding_cost_cents"] == 6
+    assert totals["final_inventory_value_cents"] == 242
+
+
+@pytest.mark.parametrize("demand", [
+    np.array([1]), np.array([[1, 2]]), np.array([[-1]]),
+    np.array([[1.5]]), np.empty((0, 1), dtype=int), np.array([[True]]),
+])
+def test_simulation_rejects_invalid_demand(demand):
+    with pytest.raises(ValueError, match="day-by-product"):
+        simulate_inventory([simulation_product()], ["A"], demand,
+                           FixedQuantityPolicy(2, 4), 0.02, 1)
+
+
+# persistence and output files
+
+
+def temporary_core_config(tmp_path):
+    text = (ROOT / "config" / "core.toml").read_text()
+    replacements = {
+        "../data/products.csv": str(ROOT / "data" / "products.csv"),
+        "../data/historical_sales.csv": str(ROOT / "data" / "historical_sales.csv"),
+        "../working/inventory.sqlite": str(tmp_path / "inventory.sqlite"),
+        "../results/core": str(tmp_path / "results"),
+    }
+    for original, replacement in replacements.items():
+        text = text.replace(original, replacement)
+    path = tmp_path / "core.toml"
+    path.write_text(text)
+    return path
+
+
+def test_saved_runs_and_exports_match_simulation_and_append(tmp_path):
+    path = temporary_core_config(tmp_path)
+    assert main([str(path)]) == 0
+    database = tmp_path / "inventory.sqlite"
+    summaries = saved_simulation_summary(database)
+    assert len(summaries) == 2
+    config = load_config(path)
+    products, sales = load_sample_data()
+    historical = historical_sales_by_product(database)
+    ids, demand = generate_demand(historical, 60, 2026)
+    policies = [FixedQuantityPolicy(20, 40), OrderUpToPolicy(20, 60)]
+    for stored, policy in zip(summaries, policies):
+        expected = simulate_inventory(products, ids, demand, policy, 0.02, 1)["shop_summary"]
+        for key, value in expected.items():
+            assert stored[key] == value
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM daily_simulation_results").fetchone()[0] == 960
+        metadata = connection.execute(
+            "SELECT config_json, numpy_version, rng_method FROM simulation_runs LIMIT 1"
+        ).fetchone()
+        assert json.loads(metadata[0])["simulation"] == config["simulation"]
+        assert metadata[1] == np.__version__
+        assert "PCG64" in metadata[2]
+    output = tmp_path / "results"
+    daily = read_rows(output / "daily_simulation.csv")
+    comparison = read_rows(output / "policy_comparison.csv")
+    assert len(daily) == 960
+    assert len(comparison) == 18  # 2 shop totals + 2 x 8 products
+    for row, expected in zip([r for r in comparison if r["scope"] == "shop"], summaries):
+        assert int(row["operating_result_cents"]) == expected["operating_result_cents"]
+        assert int(row["outstanding_orders"]) == expected["outstanding_orders"]
+    historical_rows = read_rows(output / "historical_summary.csv")
+    assert len(historical_rows) == 11  # 8 products and 3 categories
+    assert historical_rows[0]["revenue"] == "1832.50"
+    report = (output / "report.txt").read_text()
+    assert "2764.20" in report
+    assert "Limitations:" in report
+    assert "fixed_quantity" in report
+    assert "PASSED" in (output / "validation_report.txt").read_text()
+    assert main([str(path)]) == 0
+    assert len(saved_simulation_summary(database)) == 4
+    assert {row["run_id"] for row in read_rows(output / "daily_simulation.csv")} == {"3", "4"}
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM historical_sales").fetchone()[0] == 720
+
+
+def test_saved_runs_survive_catalogue_replacement(tmp_path):
+    assert main([str(temporary_core_config(tmp_path))]) == 0
+    database = tmp_path / "inventory.sqlite"
+    previous = saved_simulation_summary(database)
+    products, sales = load_sample_data()
+    removed = products.pop(0)["product_id"]
+    products[0]["purchase_cost"] = 99
+    sales = [row for row in sales if row["product_id"] != removed]
+    import_historical_data(database, products, sales)
+    assert saved_simulation_summary(database) == previous
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM simulation_products").fetchone()[0] == 16
+
+
+def test_failed_comparison_save_rolls_back_all_new_runs(tmp_path):
+    path = temporary_core_config(tmp_path)
+    assert main([str(path)]) == 0
+    database = tmp_path / "inventory.sqlite"
+    previous = saved_simulation_summary(database)
+    config = load_config(path)
+    products, _ = load_sample_data()
+    historical = historical_sales_by_product(database)
+    ids, demand = generate_demand(historical, 60, 2026)
+    result = simulate_inventory(products, ids, demand, FixedQuantityPolicy(20, 40), 0.02, 1)
+    bad = deepcopy(result)
+    bad["daily_results"][0]["product_id"] = "UNKNOWN"
+    with pytest.raises(sqlite3.IntegrityError):
+        save_simulation_runs(database, config, products, historical, [result, bad])
+    assert saved_simulation_summary(database) == previous
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM simulation_runs").fetchone()[0] == 2
+        assert connection.execute("SELECT COUNT(*) FROM daily_simulation_results").fetchone()[0] == 960
+
+
+@pytest.mark.parametrize("filename", [
+    "products_zero_cost.csv", "sales_negative_quantity.csv", "sales_missing_day.csv",
+    "sales_duplicate_pair.csv", "sales_unknown_product.csv", "invalid_config.toml",
+])
+def test_invalid_inputs_report_failure_without_changing_saved_runs(tmp_path, filename):
+    path = temporary_core_config(tmp_path)
+    assert main([str(path)]) == 0
+    database = tmp_path / "inventory.sqlite"
+    previous = saved_simulation_summary(database)
+    old_export = (tmp_path / "results" / "daily_simulation.csv").read_bytes()
+    text = path.read_text()
+    if filename == "invalid_config.toml":
+        text = text.replace("days = 60", "days = 0")
+    else:
+        valid_name = "products.csv" if filename.startswith("products") else "historical_sales.csv"
+        text = text.replace(str(ROOT / "data" / valid_name), str(ROOT / "validation" / filename))
+    path.write_text(text)
+    assert main([str(path)]) == 1
+    assert "FAILED" in (tmp_path / "results" / "validation_report.txt").read_text()
+    assert saved_simulation_summary(database) == previous
+    assert (tmp_path / "results" / "daily_simulation.csv").read_bytes() == old_export
+
+
+def test_zero_demand_is_null_in_sql_and_blank_in_export(tmp_path):
+    path = temporary_core_config(tmp_path)
+    _, sales = sample_rows()
+    for row in sales:
+        row["units_sold"] = "0"
+    sales_path = tmp_path / "zero_sales.csv"
+    write_rows(sales_path, sales)
+    path.write_text(path.read_text().replace(str(ROOT / "data" / "historical_sales.csv"), str(sales_path)))
+    assert main([str(path)]) == 0
+    assert all(row["fulfilment_rate"] is None for row in saved_simulation_summary(tmp_path / "inventory.sqlite"))
+    comparison = read_rows(tmp_path / "results" / "policy_comparison.csv")
+    assert all(row["fulfilment_rate"] == "" for row in comparison)
+    assert "N/A (zero demand)" in (tmp_path / "results" / "report.txt").read_text()
