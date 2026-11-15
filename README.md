@@ -1,21 +1,5 @@
 # Inventory profitability simulator
 
-Advanced Python coursework. Python modules and tests are in the project root,
-with no nested source package. The supplied data keep the professor's layout:
-
-```text
-main.py, config.py, validation.py, database.py, simulation.py, reporting.py, test_project.py
-config/       TOML configurations
-data/         product and sales CSV files
-checks/       expected historical summaries
-validation/   deliberately invalid inputs
-working/      database created when the program runs
-results/      generated CSV and text reports
-```
-
-`README.txt` is the original student-sample guidance. This `README.md` explains
-how to run our implementation.
-
 ## Setup and execution
 
 Use Python 3.12 or later: the pinned NumPy version requires it. Tested locally
