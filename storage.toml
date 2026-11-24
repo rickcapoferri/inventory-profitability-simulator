@@ -1,0 +1,41 @@
+# Configuration of the simulator (extension B: storage constraint).
+# Paths are relative to the folder of THIS file, not to where you run the program.
+
+[files]
+products = "data/products.csv"                  # product catalogue
+historical_sales = "data/historical_sales.csv"  # one row per product and day
+database = "output/inventory.sqlite"            # created if it does not exist
+output_directory = "output"                     # the output files are written here
+
+[simulation]
+days = 60          # days to simulate (integer >= 1)
+seed = 2026        # random seed: same seed = same demand = same results
+currency = "EUR"   # only EUR is supported
+
+[demand]
+model = "poisson"                       # only "poisson" is supported
+mean_source = "historical_daily_mean"   # mean of each product's past daily sales
+
+[costs]
+holding_per_unit_per_day = 0.02   # EUR paid every day for each unit left in stock
+fixed_per_product_order = 1.00    # EUR paid for each product ordered on a day
+
+# Order 'quantity' units when the end-of-day stock is below 'threshold'.
+[policies.fixed_quantity]
+threshold = 20
+quantity = 40      # integer >= 1
+
+# Order up to 'target' units when the end-of-day stock is below 'threshold'.
+[policies.order_up_to]
+threshold = 20
+target = 60        # must be >= threshold
+
+[extension]
+selected = "storage"   # "storage" or "" (core only, no capacity limit)
+
+[storage]
+capacity_units = 300   # maximum total units in the shop (all products together)
+# at least two rules, compared on the same demand:
+#   product_id_ascending   = P001 is served first, then P002, ...
+#   unit_margin_descending = the highest (price - cost) is served first
+allocation_rules = ["product_id_ascending", "unit_margin_descending"]
