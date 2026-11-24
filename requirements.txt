@@ -1,2 +1,3 @@
-numpy==2.5.4
-pytest==9.2.0
+# Python 3.11 or later is required (tomllib). sqlite3, csv, argparse and
+# unittest come with the standard library.
+numpy>=1.26
