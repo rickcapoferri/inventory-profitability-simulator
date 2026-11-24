@@ -1,227 +1,240 @@
-"""Load and validate product and daily sales CSV files using the standard library."""
+"""Read and check the two CSV input files."""
+
+# We do not stop at the first error: every problem is added to a list
+# "issues" with the file name and line number, so the user can correct all
+# of them at once. The header is line 1, so the first data row is line 2.
+#
+# CSV files (UTF-8, comma separated, one header row):
+#   products.csv:          product_id,name,category,purchase_cost,selling_price,initial_stock
+#   historical_sales.csv:  date,product_id,units_sold
+# Money is in EUR with at most two decimals; dates are YYYY-MM-DD.
 
 import csv
 from datetime import date, timedelta
-from math import isfinite
-from pathlib import Path
 
-PROJECT_DIRECTORY = Path(__file__).resolve().parent
-PRODUCTS_PATH = PROJECT_DIRECTORY / "data" / "products.csv"
-HISTORICAL_SALES_PATH = PROJECT_DIRECTORY / "data" / "historical_sales.csv"
+from common import Product, SaleRecord, euros_to_cents
 
-PRODUCT_COLUMNS = (
-    "product_id", "name", "category", "purchase_cost", "selling_price", "initial_stock"
-)
-SALES_COLUMNS = ("date", "product_id", "units_sold")
+PRODUCT_COLUMNS = ["product_id", "name", "category", "purchase_cost",
+                   "selling_price", "initial_stock"]
+SALES_COLUMNS = ["date", "product_id", "units_sold"]
+MIN_HISTORY_DAYS = 30
+MAX_LISTED_MISSING = 20  # so the report does not get thousands of lines
 
 
-class CSVValidationError(ValueError):
-    """Invalid CSV input; messages identify offending fields and CSV rows."""
+# Functions that read one field: they return the value or raise ValueError
+
+def parse_non_negative_int(text: str) -> int:
+    """Accept only digits, such as "0" or "42" (no sign, no decimals)."""
+    text = text.strip()
+    if not text.isdigit() or not text.isascii():  # isdigit() alone also accepts "²"
+        raise ValueError("must be a non-negative integer")
+    return int(text)
 
 
-def products_csv_validation(
-    products_file: str | Path = PRODUCTS_PATH,
-    sales_file: str | Path = HISTORICAL_SALES_PATH,
-) -> tuple[list[dict], list[dict]]:
-    """Return validated rows; paths may come from ``load_config()['files']``."""
-    products = _read_csv(products_file, PRODUCT_COLUMNS, "products")
-    sales = _read_csv(sales_file, SALES_COLUMNS, "historical_sales")
-    errors: list[str] = []
-    # Each call is written out so the validation order is easy to follow.
+def parse_positive_money(text: str) -> int:
+    """Read a positive amount in euros and return it in cents."""
     try:
-        product_identifiers_unique(products)
-    except CSVValidationError as error:
-        errors.append(str(error))
-    try:
-        costs_and_selling_prices_positive(products)
-    except CSVValidationError as error:
-        errors.append(str(error))
-    try:
-        stock_and_sales_quantities_non_negative(products, sales)
-    except CSVValidationError as error:
-        errors.append(str(error))
-    try:
-        dates_valid_iso(sales)
-    except CSVValidationError as error:
-        errors.append(str(error))
-    try:
-        sales_reference_existing_product(products, sales)
-    except CSVValidationError as error:
-        errors.append(str(error))
-    try:
-        product_date_pair_unique(sales)
-    except CSVValidationError as error:
-        errors.append(str(error))
-    if not errors:
-        try:
-            sales_history_complete(products, sales)
-        except CSVValidationError as error:
-            errors.append(str(error))
-    if errors:
-        raise CSVValidationError("CSV validation failed:\n- " + "\n- ".join(errors))
-
-    for row in products:
-        row["purchase_cost"] = float(row["purchase_cost"])
-        row["selling_price"] = float(row["selling_price"])
-        row["initial_stock"] = int(row["initial_stock"])
-    for row in sales:
-        row["units_sold"] = int(row["units_sold"])
-    return products, sales
+        cents = euros_to_cents(text.strip())
+    except ValueError:
+        raise ValueError("must be a finite number with at most two decimals")
+    if cents <= 0:
+        raise ValueError("must be positive")
+    return cents
 
 
-def _row_numbers(invalid: set[int]) -> str:
-    numbers = [str(index + 2) for index in sorted(invalid)]
-    return ", ".join(numbers[:10]) + (", ..." if len(numbers) > 10 else "")
-
-
-def _read_csv(path: str | Path, columns: tuple[str, ...], label: str) -> list[dict[str, str]]:
+def parse_iso_date(text: str) -> date:
+    """Accept only YYYY-MM-DD and refuse impossible dates like 2026-02-30."""
+    text = text.strip()
+    if len(text) != 10 or text[4] != "-" or text[7] != "-":
+        raise ValueError("must be a date written as YYYY-MM-DD")
     try:
-        with Path(path).open("r", encoding="utf-8-sig", newline="") as file:
+        return date.fromisoformat(text)
+    except ValueError:
+        raise ValueError("is not a valid calendar date")
+
+
+# Reading the files
+
+def read_rows(path, columns: list, issues: list) -> list:
+    """Return a list of (line_number, row) for the data rows of a CSV file."""
+    # Each row is a dictionary {column name: text}. If the file cannot be read
+    # (not found, not UTF-8, broken quotes) or the header is wrong, we add an
+    # issue and return what we could read.
+    rows = []
+    try:
+        # "utf-8-sig" also reads files saved by Excel, which start with a BOM mark
+        with open(path, newline="", encoding="utf-8-sig") as file:
             reader = csv.DictReader(file, strict=True)
-            headers = reader.fieldnames or []
-            if len(headers) != len(set(headers)):
-                raise CSVValidationError(f"{label}: duplicate column names.")
-            missing = set(columns) - set(headers)
+            header = reader.fieldnames or []
+            missing = [c for c in columns if c not in header]
             if missing:
-                raise CSVValidationError(f"{label}: missing columns: {', '.join(sorted(missing))}")
-            rows = list(reader)
-    except CSVValidationError:
-        raise
-    except (OSError, UnicodeError, csv.Error) as error:
-        raise CSVValidationError(f"Cannot read {label} CSV {path}: {error}") from error
-    if not rows:
-        raise CSVValidationError(f"{label}: CSV must contain at least one data row.")
-    for index, row in enumerate(rows):
-        if None in row:
-            raise CSVValidationError(f"{label}: extra fields at CSV rows {index + 2}.")
-    for column in columns:
-        blank = set()
-        for index, row in enumerate(rows):
-            if not (row.get(column) or "").strip():
-                blank.add(index)
-        if blank:
-            raise CSVValidationError(
-                f"{label}.{column}: missing values at CSV rows {_row_numbers(blank)}."
-            )
+                issues.append(f"{path.name}: header is missing column(s) {missing}; "
+                              f"expected {columns}")
+                return rows
+            for row in reader:
+                # reader.line_num is the line just read (the header is line 1)
+                if None in row or None in row.values():
+                    issues.append(f"{path.name}:{reader.line_num}: wrong number of fields")
+                else:
+                    rows.append((reader.line_num, row))
+    except (OSError, UnicodeDecodeError, csv.Error) as error:
+        issues.append(f"{path.name}: cannot read the file: {error}")
     return rows
 
 
-def product_identifiers_unique(products: list[dict]) -> None:
-    seen: set[str] = set()
-    duplicates: set[int] = set()
-    for index, row in enumerate(products):
-        identifier = row["product_id"]
-        if identifier in seen:
-            duplicates.add(index)
-        seen.add(identifier)
-    if duplicates:
-        raise CSVValidationError(
-            f"products.product_id: duplicate identifiers at CSV rows {_row_numbers(duplicates)}."
-        )
+def read_products(path, issues: list) -> tuple:
+    """Read the catalogue. Wrong rows are reported and skipped."""
+    # Returns (products, seen_ids): products is a dictionary {product_id: Product}
+    # with the valid rows; seen_ids is the set of ALL ids in the file, also the
+    # ones of wrong rows, so that their sales are not reported as "unknown" 90 times.
+    products = {}
+    seen_ids = set()
+    for line, row in read_rows(path, PRODUCT_COLUMNS, issues):
+        where = f"{path.name}:{line}"
+        row_ok = True
+        product_id = row["product_id"].strip()
+        if product_id == "":
+            issues.append(f"{where}: product_id is empty")
+            row_ok = False
+        elif product_id == "SHOP":  # "SHOP" is the label of the shop totals in the outputs
+            issues.append(f"{where}: product_id 'SHOP' is reserved")
+            row_ok = False
+        elif product_id in seen_ids:
+            issues.append(f"{where}: duplicate product_id {product_id!r}")
+            row_ok = False
+        for field in ["name", "category"]:
+            if row[field].strip() == "":
+                issues.append(f"{where}: {field} is empty")
+                row_ok = False
 
-
-def _validate_number(rows: list[dict], column: str, label: str, integer: bool) -> None:
-    invalid: set[int] = set()
-    for index, row in enumerate(rows):
         try:
-            if integer:
-                # Validate using the same conversion used for the returned rows.
-                value = int(row[column])
-                valid = value >= 0
-            else:
-                value = float(row[column])
-                valid = isfinite(value) and value > 0
-        except (TypeError, ValueError, OverflowError):
-            valid = False
-        if not valid:
-            invalid.add(index)
-    if invalid:
-        requirement = "finite non-negative integers" if integer else "finite positive numbers"
-        raise CSVValidationError(
-            f"{label}.{column}: expected {requirement} at CSV rows {_row_numbers(invalid)}."
-        )
+            cost = parse_positive_money(row["purchase_cost"])
+        except ValueError as error:
+            issues.append(f"{where}: purchase_cost = {row['purchase_cost']!r} {error}")
+            row_ok = False
+        try:
+            price = parse_positive_money(row["selling_price"])
+        except ValueError as error:
+            issues.append(f"{where}: selling_price = {row['selling_price']!r} {error}")
+            row_ok = False
+        try:
+            stock = parse_non_negative_int(row["initial_stock"])
+        except ValueError as error:
+            issues.append(f"{where}: initial_stock = {row['initial_stock']!r} {error}")
+            row_ok = False
+
+        seen_ids.add(product_id)
+        if row_ok:
+            products[product_id] = Product(product_id, row["name"].strip(),
+                                           row["category"].strip(), cost, price, stock)
+    if len(products) == 0 and len(issues) == 0:
+        issues.append(f"{path.name}: the catalogue contains no products")
+    return products, seen_ids
 
 
-def costs_and_selling_prices_positive(products: list[dict]) -> None:
-    for column in ("purchase_cost", "selling_price"):
-        _validate_number(products, column, "products", integer=False)
+def read_sales(path, known_ids: set, issues: list) -> list:
+    """Read the sales; check the product ids and the duplicate (date, product) pairs."""
+    sales = []
+    seen_pairs = set()  # a set, because we only need to know "did we see it already?"
+    for line, row in read_rows(path, SALES_COLUMNS, issues):
+        where = f"{path.name}:{line}"
+        row_ok = True
+        day = None
+        try:
+            day = parse_iso_date(row["date"]).isoformat()
+        except ValueError as error:
+            issues.append(f"{where}: date = {row['date']!r} {error}")
+            row_ok = False
+        product_id = row["product_id"].strip()
+        if product_id not in known_ids:
+            issues.append(f"{where}: unknown product_id {product_id!r}")
+            row_ok = False
+        try:
+            units = parse_non_negative_int(row["units_sold"])
+        except ValueError as error:
+            issues.append(f"{where}: units_sold = {row['units_sold']!r} {error}")
+            row_ok = False
+        if day is not None:
+            if (day, product_id) in seen_pairs:
+                issues.append(f"{where}: duplicate record for product {product_id} on {day}")
+                row_ok = False
+            seen_pairs.add((day, product_id))
+        if row_ok:
+            sales.append(SaleRecord(day, product_id, units))
+    return sales
 
 
-def stock_and_sales_quantities_non_negative(
-    products: list[dict], sales: list[dict]
-) -> None:
-    _validate_number(products, "initial_stock", "products", integer=True)
-    _validate_number(sales, "units_sold", "historical_sales", integer=True)
+def check_completeness(sales: list, product_ids: set, issues: list) -> tuple:
+    """Every product needs one row for every day of the same date window."""
+    # The window goes from the first to the last date of the file and must be
+    # at least MIN_HISTORY_DAYS long. Returns (first_date, last_date).
+    if len(sales) == 0:
+        issues.append("historical sales: no valid sales records")
+        return None, None
+    dates = sorted(set(s.sale_date for s in sales))
+    first = date.fromisoformat(dates[0])
+    last = date.fromisoformat(dates[-1])
+    n_days = (last - first).days + 1
+    if n_days < MIN_HISTORY_DAYS:
+        issues.append(f"historical sales: window {first} to {last} has {n_days} days; "
+                      f"at least {MIN_HISTORY_DAYS} consecutive days are required")
+
+    present = set((s.sale_date, s.product_id) for s in sales)
+    missing = []
+    for product_id in sorted(product_ids):
+        for i in range(n_days):
+            day = (first + timedelta(days=i)).isoformat()
+            if (day, product_id) not in present:
+                missing.append((day, product_id))
+    for day, product_id in missing[:MAX_LISTED_MISSING]:
+        issues.append(f"historical sales: missing record for product {product_id} on {day} "
+                      f"(zero sales must be written explicitly)")
+    if len(missing) > MAX_LISTED_MISSING:
+        issues.append(f"historical sales: ... and {len(missing) - MAX_LISTED_MISSING} "
+                      f"more missing product-date pairs")
+    return first.isoformat(), last.isoformat()
 
 
-def _is_iso_date(value: str) -> bool:
-    try:
-        return date.fromisoformat(value).isoformat() == value
-    except (TypeError, ValueError):
-        return False
+def validate_inputs(products_path, sales_path) -> dict:
+    """Check both files. Returns a dictionary with what was read and the issues."""
+    # The input is valid when result["issues"] is an empty list.
+    issues = []
+    products, seen_ids = read_products(products_path, issues)
+    sales = read_sales(sales_path, seen_ids, issues)
+    first_date, last_date = check_completeness(sales, seen_ids, issues)
+    return {"products": products, "sales": sales, "issues": issues,
+            "first_date": first_date, "last_date": last_date}
 
 
-def dates_valid_iso(sales: list[dict]) -> None:
-    invalid = {i for i, row in enumerate(sales) if not _is_iso_date(row["date"])}
-    if invalid:
-        raise CSVValidationError(
-            "historical_sales.date: expected valid YYYY-MM-DD dates at CSV rows "
-            f"{_row_numbers(invalid)}."
-        )
-
-
-def sales_reference_existing_product(products: list[dict], sales: list[dict]) -> None:
-    product_ids = {row["product_id"] for row in products}
-    invalid = {i for i, row in enumerate(sales) if row["product_id"] not in product_ids}
-    if invalid:
-        unknown = set()
-        for index in invalid:
-            unknown.add(sales[index]["product_id"])
-        raise CSVValidationError(
-            f"historical_sales.product_id: unknown products ({', '.join(sorted(unknown))}) at CSV rows "
-            f"{_row_numbers(invalid)}."
-        )
-
-
-def product_date_pair_unique(sales: list[dict]) -> None:
-    seen: set[tuple[str, str]] = set()
-    duplicates: set[int] = set()
-    for index, row in enumerate(sales):
-        pair = (row["product_id"], row["date"])
-        if pair in seen:
-            duplicates.add(index)
-        seen.add(pair)
-    if duplicates:
-        raise CSVValidationError(
-            "historical_sales: duplicate product-date pairs at CSV rows "
-            f"{_row_numbers(duplicates)}."
-        )
-
-
-def sales_history_complete(products: list[dict], sales: list[dict]) -> None:
-    dates = [date.fromisoformat(row["date"]) for row in sales]
-    first_day, last_day = min(dates), max(dates)
-    days = (last_day - first_day).days + 1
-    if days < 30:
-        raise CSVValidationError(
-            f"historical_sales: at least 30 consecutive days are required; found {days}."
-        )
-    dates_by_product: dict[str, set[date]] = {}
-    for row in sales:
-        dates_by_product.setdefault(row["product_id"], set()).add(date.fromisoformat(row["date"]))
-    details = []
-    for product in products:
-        present = dates_by_product.get(product["product_id"], set())
-        if len(present) != days:
-            missing_day = first_day
-            for day in sorted(present):
-                if day != missing_day:
-                    break
-                missing_day += timedelta(days=1)
-            details.append(f"{product['product_id']}: missing {missing_day.isoformat()}")
-    if details:
-        raise CSVValidationError(
-            "historical_sales: incomplete history; explicit rows (including zero sales) "
-            f"are required for every product on every day from {first_day} to {last_day}. "
-            + "; ".join(details[:10])
-        )
+def write_validation_report(result: dict, report_path, products_path, sales_path,
+                            extra_problems=None) -> None:
+    """Write validation_report.txt (the file is replaced every time)."""
+    # extra_problems are problems found after reading the files, for example
+    # a storage capacity that is too small or a conflict with the database.
+    problems = result["issues"]
+    if extra_problems:
+        problems = problems + extra_problems
+    if problems:
+        outcome = "INVALID - simulation blocked"
+    else:
+        outcome = "VALID - simulation allowed"
+    lines = [
+        "VALIDATION REPORT",
+        f"Products file: {products_path}",
+        f"Sales file:    {sales_path}",
+        f"Valid products read: {len(result['products'])}",
+        f"Valid sales records read: {len(result['sales'])}",
+        f"History window: {result['first_date']} to {result['last_date']}",
+        "",
+        f"OUTCOME: {outcome}",
+        "",
+    ]
+    if problems:
+        lines.append(f"Problems found ({len(problems)}):")
+        for problem in problems:
+            lines.append(f"  - {problem}")
+    else:
+        lines.append("No problems found.")
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(report_path, "w", encoding="utf-8") as file:
+        file.write("\n".join(lines) + "\n")

@@ -1,21 +1,27 @@
-"""SQLite storage and SQL summaries for products and historical sales."""
+"""SQLite database: tables, import, SQL summaries and saved simulation runs."""
 
-import sqlite3
+# Every query uses ? placeholders (parameterised queries) and never builds SQL
+# by joining strings, so a value can never be read as SQL code.
+# Writes happen inside "with conn:" blocks. Each block is a transaction: it is
+# saved (commit) if everything works, and completely cancelled (rollback) if
+# an exception happens inside it.
+#
+# How to open the database (closing() makes sure it is always closed):
+#
+#     with closing(open_database(path)) as conn:
+#         ...
+
 import json
-from decimal import Decimal, ROUND_HALF_UP
-from pathlib import Path
+import sqlite3
+from datetime import datetime
 
-import numpy as np
+from common import DataNotLoadedError, ImportConflictError, Product
 
-
-DAILY_COLUMNS = (
-    "day", "product_id", "opening_stock", "received_units", "available_stock",
-    "demand", "units_sold", "units_lost", "closing_stock", "ordered_units",
-    "revenue_cents", "cost_of_goods_sold_cents", "gross_profit_cents",
-    "holding_cost_cents", "ordering_cost_cents", "operating_result_cents",
-)
-
-
+# historical_sales: one row per product and day (dates are YYYY-MM-DD text)
+# simulation_runs:  one row per run, with the configuration used (as JSON)
+# daily_results:    one row per run, day and product; the two last CHECKs say
+#                   that every unit demanded is sold or lost, and that stock
+#                   is conserved (opening + received - sold = closing)
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS products (
     product_id TEXT PRIMARY KEY,
@@ -35,280 +41,225 @@ CREATE TABLE IF NOT EXISTS historical_sales (
 );
 
 CREATE TABLE IF NOT EXISTS simulation_runs (
-    run_id INTEGER PRIMARY KEY,
+    run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
     scenario TEXT NOT NULL,
-    policy TEXT NOT NULL,
+    policy_name TEXT NOT NULL,
+    seed INTEGER NOT NULL,
     days INTEGER NOT NULL CHECK (days > 0),
-    seed INTEGER NOT NULL CHECK (seed >= 0),
-    currency TEXT NOT NULL,
-    config_json TEXT NOT NULL,
     numpy_version TEXT NOT NULL,
-    rng_method TEXT NOT NULL
+    config_json TEXT NOT NULL
 );
 
--- Snapshots keep saved runs valid when the active catalogue is replaced.
-CREATE TABLE IF NOT EXISTS simulation_products (
-    run_id INTEGER NOT NULL REFERENCES simulation_runs(run_id),
-    product_id TEXT NOT NULL,
-    name TEXT NOT NULL,
-    category TEXT NOT NULL,
-    initial_stock INTEGER NOT NULL CHECK (initial_stock >= 0),
-    purchase_cost_cents INTEGER NOT NULL CHECK (purchase_cost_cents > 0),
-    selling_price_cents INTEGER NOT NULL CHECK (selling_price_cents > 0),
-    mean_daily_units REAL NOT NULL CHECK (mean_daily_units >= 0),
-    PRIMARY KEY (run_id, product_id)
-);
-
-CREATE TABLE IF NOT EXISTS daily_simulation_results (
+CREATE TABLE IF NOT EXISTS daily_results (
     run_id INTEGER NOT NULL,
-    day INTEGER NOT NULL CHECK (day > 0),
+    day INTEGER NOT NULL CHECK (day >= 1),
     product_id TEXT NOT NULL,
     opening_stock INTEGER NOT NULL CHECK (opening_stock >= 0),
-    received_units INTEGER NOT NULL CHECK (received_units >= 0),
-    available_stock INTEGER NOT NULL CHECK (available_stock = opening_stock + received_units),
+    received INTEGER NOT NULL CHECK (received >= 0),
     demand INTEGER NOT NULL CHECK (demand >= 0),
-    units_sold INTEGER NOT NULL CHECK (units_sold >= 0 AND units_sold <= available_stock),
-    units_lost INTEGER NOT NULL CHECK (units_lost >= 0 AND demand = units_sold + units_lost),
-    closing_stock INTEGER NOT NULL CHECK (closing_stock >= 0 AND closing_stock = available_stock - units_sold),
-    ordered_units INTEGER NOT NULL CHECK (ordered_units >= 0),
-    revenue_cents INTEGER NOT NULL CHECK (revenue_cents >= 0),
-    cost_of_goods_sold_cents INTEGER NOT NULL CHECK (cost_of_goods_sold_cents >= 0),
-    gross_profit_cents INTEGER NOT NULL,
-    holding_cost_cents INTEGER NOT NULL CHECK (holding_cost_cents >= 0),
-    ordering_cost_cents INTEGER NOT NULL CHECK (ordering_cost_cents >= 0),
-    operating_result_cents INTEGER NOT NULL,
+    sold INTEGER NOT NULL CHECK (sold >= 0),
+    lost INTEGER NOT NULL CHECK (lost >= 0),
+    closing_stock INTEGER NOT NULL CHECK (closing_stock >= 0),
+    ordered INTEGER NOT NULL CHECK (ordered >= 0),
+    revenue_cents INTEGER NOT NULL,
+    cogs_cents INTEGER NOT NULL,
+    holding_cost_cents INTEGER NOT NULL,
+    ordering_cost_cents INTEGER NOT NULL,
+    CHECK (sold + lost = demand),
+    CHECK (opening_stock + received - sold = closing_stock),
     PRIMARY KEY (run_id, day, product_id),
-    FOREIGN KEY (run_id, product_id) REFERENCES simulation_products(run_id, product_id),
-    CHECK (gross_profit_cents = revenue_cents - cost_of_goods_sold_cents),
-    CHECK (operating_result_cents = gross_profit_cents - holding_cost_cents - ordering_cost_cents)
+    FOREIGN KEY (run_id) REFERENCES simulation_runs(run_id),
+    FOREIGN KEY (product_id) REFERENCES products(product_id)
 );
 """
 
 
-def initialize_database(database_path: str | Path) -> None:
-    """Create the database folder and required tables if they do not exist."""
-    path = Path(database_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(path)
-    try:
-        connection.execute("PRAGMA foreign_keys = ON")
-        connection.executescript(SCHEMA)
-    finally:
-        connection.close()
+def open_database(db_path) -> sqlite3.Connection:
+    """Open (or create) the database file and create the tables if needed."""
+    # SQLite checks foreign keys only if we ask for it on every connection.
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA foreign_keys = ON")
+    with conn:
+        conn.executescript(SCHEMA)  # "IF NOT EXISTS": safe to run every time
+    return conn
 
 
-def import_historical_data(
-    database_path: str | Path,
-    products: list[dict],
-    sales: list[dict],
-) -> None:
-    """Save validated data atomically, storing money as integer cents.
+# Import
 
-    Each import replaces the active product catalogue and sales history.
-    Repeated imports do not duplicate rows, and old dates or products cannot
-    affect the analysis of the new CSV files.
-    Values with more than two decimal places are rounded to cents using
-    ROUND_HALF_UP.
-    Any failure rolls back the whole import.
-    """
-    initialize_database(database_path)
-    product_values = []
-    for row in products:
-        product_values.append((
-            row["product_id"], row["name"], row["category"],
-            _to_cents(row["purchase_cost"]), _to_cents(row["selling_price"]),
-            row["initial_stock"],
-        ))
-    sales_values = []
-    for row in sales:
-        sales_values.append((row["date"], row["product_id"], row["units_sold"]))
+def import_data(conn: sqlite3.Connection, products: dict,
+                sales: list) -> dict:
+    """Store validated products and sales without ever duplicating a record."""
+    # Conflict rule: a record that already exists with identical values is
+    # skipped; a record that exists with different values (e.g. a changed
+    # price or a different units_sold for the same day) is a conflict. Records
+    # in the database that are not in the files (e.g. an older, longer history)
+    # are also a conflict. Any conflict rejects the whole import: the
+    # transaction is rolled back and the database stays exactly as it was.
+    #
+    # Returns counts of inserted and unchanged records.
+    counts = {"products_inserted": 0, "products_unchanged": 0,
+              "sales_inserted": 0, "sales_unchanged": 0}
+    conflicts = []
+    with conn:  # one transaction for the whole import
+        for p in products.values():
+            row = conn.execute(
+                "SELECT name, category, purchase_cost_cents, selling_price_cents, initial_stock "
+                "FROM products WHERE product_id = ?", (p.product_id,)).fetchone()
+            in_file = (p.name, p.category, p.purchase_cost_cents, p.selling_price_cents,
+                       p.initial_stock)
+            if row is None:
+                conn.execute("INSERT INTO products VALUES (?, ?, ?, ?, ?, ?)",
+                             (p.product_id, *in_file))
+                counts["products_inserted"] += 1
+            elif row == in_file:
+                counts["products_unchanged"] += 1
+            else:
+                conflicts.append(f"product {p.product_id}: database has {row}, "
+                                 f"file has {in_file}")
 
-    connection = sqlite3.connect(database_path)
-    try:
-        connection.execute("PRAGMA foreign_keys = ON")
-        # The transaction restores the previous dataset if any insert fails.
-        with connection:
-            connection.execute("DELETE FROM historical_sales")
-            connection.execute("DELETE FROM products")
-            connection.executemany(
-                """
-                INSERT INTO products (
-                    product_id, name, category, purchase_cost_cents,
-                    selling_price_cents, initial_stock
-                ) VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                product_values,
-            )
-            connection.executemany(
-                """
-                INSERT INTO historical_sales (sale_date, product_id, units_sold)
-                VALUES (?, ?, ?)
-                """,
-                sales_values,
-            )
-    finally:
-        connection.close()
+        for s in sales:
+            row = conn.execute(
+                "SELECT units_sold FROM historical_sales WHERE sale_date = ? AND product_id = ?",
+                (s.sale_date, s.product_id)).fetchone()
+            if row is None:
+                conn.execute("INSERT INTO historical_sales VALUES (?, ?, ?)",
+                             (s.sale_date, s.product_id, s.units_sold))
+                counts["sales_inserted"] += 1
+            elif row[0] == s.units_sold:
+                counts["sales_unchanged"] += 1
+            else:
+                conflicts.append(f"sale {s.product_id} on {s.sale_date}: stored "
+                                 f"{row[0]} units, file has {s.units_sold}")
+
+        # The database must contain exactly the dataset in the CSV files.
+        # Otherwise old products or dates would be silently simulated too.
+        n_products = conn.execute("SELECT COUNT(*) FROM products").fetchone()[0]
+        n_sales = conn.execute("SELECT COUNT(*) FROM historical_sales").fetchone()[0]
+        if n_products != len(products) or n_sales != len(sales):
+            conflicts.append(f"database holds {n_products} products and {n_sales} sales, "
+                             f"the files {len(products)} and {len(sales)}; "
+                             "run 'init-db --reset' to start from these files")
+
+        if conflicts:
+            raise ImportConflictError(conflicts)  # leaves the with-block -> rollback
+    return counts
 
 
-def historical_sales_by_product(database_path: str | Path) -> list[dict]:
-    """Return units, revenue, cost of goods sold, and gross profit per product."""
-    query = """
-        SELECT p.product_id,
-               COUNT(DISTINCT s.sale_date) AS days,
-               SUM(s.units_sold) AS units_sold,
-               AVG(s.units_sold) AS mean_daily_units,
-               SUM(s.units_sold * p.selling_price_cents) / 100.0 AS revenue,
-               SUM(s.units_sold * p.purchase_cost_cents) / 100.0 AS cost_of_goods_sold,
-               SUM(s.units_sold * (p.selling_price_cents - p.purchase_cost_cents)) / 100.0 AS gross_profit
-        FROM products AS p
-        JOIN historical_sales AS s ON s.product_id = p.product_id
+# Loading data back for the simulation
+
+def load_products(conn: sqlite3.Connection) -> list:
+    """All products ordered by product_id (the column order of every array)."""
+    rows = conn.execute(
+        "SELECT product_id, name, category, purchase_cost_cents, selling_price_cents, "
+        "initial_stock FROM products ORDER BY product_id").fetchall()
+    if not rows:
+        raise DataNotLoadedError("no products in the database: run the 'import' command first")
+    return [Product(*row) for row in rows]
+
+
+def load_history_rows(conn: sqlite3.Connection) -> list:
+    """Historical sales ordered by date, then product_id."""
+    return conn.execute(
+        "SELECT sale_date, product_id, units_sold FROM historical_sales "
+        "ORDER BY sale_date, product_id").fetchall()
+
+
+# Required SQL summaries (aggregation happens in SQL, not in Python)
+
+def sales_by_product(conn: sqlite3.Connection) -> list:
+    """Units sold, revenue, COGS and gross profit by product (cents)."""
+    return conn.execute("""
+        SELECT p.product_id, p.name, p.category,
+               COUNT(*)                                  AS days,
+               SUM(h.units_sold)                         AS units_sold,
+               AVG(h.units_sold)                         AS mean_daily_units,
+               SUM(h.units_sold * p.selling_price_cents) AS revenue_cents,
+               SUM(h.units_sold * p.purchase_cost_cents) AS cogs_cents,
+               SUM(h.units_sold * (p.selling_price_cents - p.purchase_cost_cents))
+                                                         AS gross_profit_cents
+        FROM historical_sales AS h
+        JOIN products AS p ON p.product_id = h.product_id
         GROUP BY p.product_id
         ORDER BY p.product_id
-    """
-    return _fetch_all(database_path, query)
+    """).fetchall()
 
 
-def historical_revenue_by_category(database_path: str | Path) -> list[dict]:
-    """Return historical sales units and revenue grouped by product category."""
-    query = """
+def revenue_by_category(conn: sqlite3.Connection) -> list:
+    """Units sold and revenue by category, using a JOIN with products."""
+    return conn.execute("""
         SELECT p.category,
-               SUM(s.units_sold) AS units_sold,
-               SUM(s.units_sold * p.selling_price_cents) / 100.0 AS revenue
-        FROM historical_sales AS s
-        JOIN products AS p ON p.product_id = s.product_id
+               COUNT(DISTINCT p.product_id)              AS n_products,
+               SUM(h.units_sold)                         AS units_sold,
+               SUM(h.units_sold * p.selling_price_cents) AS revenue_cents
+        FROM historical_sales AS h
+        JOIN products AS p ON p.product_id = h.product_id
         GROUP BY p.category
-        ORDER BY p.category
-    """
-    return _fetch_all(database_path, query)
+        ORDER BY revenue_cents DESC, p.category
+    """).fetchall()
 
 
-def best_selling_products(
-    database_path: str | Path,
-    start_date: str,
-    end_date: str,
-) -> list[dict]:
-    """Return products ranked by units sold in an inclusive ISO date range."""
-    query = """
-        SELECT p.product_id,
-               p.name,
-               SUM(s.units_sold) AS units_sold
-        FROM historical_sales AS s
-        JOIN products AS p ON p.product_id = s.product_id
-        WHERE s.sale_date BETWEEN ? AND ?
-        GROUP BY p.product_id, p.name
+def best_sellers(conn: sqlite3.Connection, start_date: str, end_date: str,
+                 limit: int = 3) -> list:
+    """Products with most units sold between two dates (inclusive)."""
+    # ISO dates sort correctly as text, so BETWEEN works on the TEXT column.
+    # Ties are broken by product_id so the result is deterministic.
+    return conn.execute("""
+        SELECT p.product_id, p.name,
+               SUM(h.units_sold)                         AS units_sold,
+               SUM(h.units_sold * p.selling_price_cents) AS revenue_cents
+        FROM historical_sales AS h
+        JOIN products AS p ON p.product_id = h.product_id
+        WHERE h.sale_date BETWEEN ? AND ?
+        GROUP BY p.product_id
         ORDER BY units_sold DESC, p.product_id
-    """
-    return _fetch_all(database_path, query, (start_date, end_date))
+        LIMIT ?
+    """, (start_date, end_date, limit)).fetchall()
 
 
-def save_simulation_runs(
-    database_path: str | Path,
-    config: dict,
-    products: list[dict],
-    historical_summary: list[dict],
-    simulations: list[dict],
-) -> list[int]:
-    """Append a policy comparison atomically, including input snapshots.
-
-    Both policies belong to the core scenario. Extension settings are retained
-    as requested configuration but are not claimed as implemented experiments.
-    """
-    initialize_database(database_path)
-    means = {}
-    for row in historical_summary:
-        means[row["product_id"]] = row["mean_daily_units"]
-    config_json = json.dumps(config, default=str, sort_keys=True)
-    run_ids = []
-    connection = sqlite3.connect(database_path)
-    try:
-        connection.execute("PRAGMA foreign_keys = ON")
-        with connection:
-            for result in simulations:
-                cursor = connection.execute(
-                    """INSERT INTO simulation_runs
-                    (scenario, policy, days, seed, currency, config_json, numpy_version, rng_method)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                    ("core", result["policy"], config["simulation"]["days"],
-                     config["simulation"]["seed"], config["simulation"]["currency"],
-                     config_json, np.__version__, "default_rng(PCG64).poisson"),
-                )
-                run_id = cursor.lastrowid
-                run_ids.append(run_id)
-                for product in products:
-                    connection.execute(
-                        """INSERT INTO simulation_products
-                        (run_id, product_id, name, category, initial_stock,
-                         purchase_cost_cents, selling_price_cents, mean_daily_units)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                        (run_id, product["product_id"], product["name"], product["category"],
-                         product["initial_stock"], _to_cents(product["purchase_cost"]),
-                         _to_cents(product["selling_price"]), means[product["product_id"]]),
-                    )
-                values = []
-                for row in result["daily_results"]:
-                    values.append((run_id,) + tuple(row[key] for key in DAILY_COLUMNS))
-                # Column names come from our constant; all data use placeholders.
-                columns = ", ".join(DAILY_COLUMNS)
-                placeholders = ", ".join(["?"] * (len(DAILY_COLUMNS) + 1))
-                connection.executemany(
-                    f"INSERT INTO daily_simulation_results (run_id, {columns}) VALUES ({placeholders})",
-                    values,
-                )
-    finally:
-        connection.close()
-    return run_ids
+def history_window(conn: sqlite3.Connection) -> tuple:
+    """First and last date stored in historical_sales."""
+    return conn.execute(
+        "SELECT MIN(sale_date), MAX(sale_date) FROM historical_sales").fetchone()
 
 
-def saved_simulation_summary(database_path: str | Path) -> list[dict]:
-    """Aggregate saved runs in SQL, including final stock and pending orders."""
-    return _fetch_all(database_path, """
-        SELECT r.run_id, r.scenario, r.policy, r.days, r.seed, r.currency,
-               SUM(d.demand) AS demand,
-               SUM(d.units_sold) AS units_sold,
-               SUM(d.units_lost) AS units_lost,
-               SUM(d.ordered_units) AS ordered_units,
-               SUM(d.received_units) AS received_units,
-               1.0 * SUM(d.units_sold) / NULLIF(SUM(d.demand), 0) AS fulfilment_rate,
-               SUM(d.revenue_cents) AS revenue_cents,
-               SUM(d.cost_of_goods_sold_cents) AS cost_of_goods_sold_cents,
-               SUM(d.gross_profit_cents) AS gross_profit_cents,
-               SUM(d.holding_cost_cents) AS holding_cost_cents,
-               SUM(d.ordering_cost_cents) AS ordering_cost_cents,
-               SUM(d.operating_result_cents) AS operating_result_cents,
-               SUM(CASE WHEN d.day = r.days THEN d.closing_stock ELSE 0 END) AS final_stock,
-               SUM(CASE WHEN d.day = r.days THEN d.ordered_units ELSE 0 END) AS outstanding_orders,
-               SUM(CASE WHEN d.day = r.days
-                   THEN d.closing_stock * p.purchase_cost_cents ELSE 0 END) AS final_inventory_value_cents
+def runs_summary(conn: sqlite3.Connection, limit: int = 50) -> list:
+    """One line per saved simulation run with its totals (most recent first)."""
+    return conn.execute("""
+        SELECT r.run_id, r.created_at, r.scenario, r.policy_name, r.seed, r.days,
+               SUM(d.demand)               AS demand,
+               SUM(d.sold)                 AS sold,
+               SUM(d.lost)                 AS lost,
+               SUM(d.revenue_cents)        AS revenue_cents,
+               SUM(d.revenue_cents - d.cogs_cents - d.holding_cost_cents
+                   - d.ordering_cost_cents) AS operating_result_cents
         FROM simulation_runs AS r
-        JOIN daily_simulation_results AS d ON d.run_id = r.run_id
-        JOIN simulation_products AS p ON p.run_id = d.run_id AND p.product_id = d.product_id
+        JOIN daily_results AS d ON d.run_id = r.run_id
         GROUP BY r.run_id
-        ORDER BY r.run_id
-    """)
+        ORDER BY r.run_id DESC
+        LIMIT ?
+    """, (limit,)).fetchall()
 
 
-def _fetch_all(
-    database_path: str | Path,
-    query: str,
-    parameters: tuple = (),
-) -> list[dict]:
-    """Execute a read-only parameterized query and return named rows."""
-    connection = sqlite3.connect(database_path)
-    try:
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
-        rows = connection.execute(query, parameters).fetchall()
-        results = []
-        for row in rows:
-            results.append(dict(row))
-        return results
-    finally:
-        connection.close()
+# Saving simulation runs
 
-
-def _to_cents(value) -> int:
-    """Convert a decimal currency amount to integer cents with half-up rounding."""
-    amount = Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    if amount <= 0:
-        raise ValueError(f"Price {value} must remain positive after rounding to cents")
-    return int(amount * 100)
+def save_run(conn: sqlite3.Connection, scenario: str, policy_name: str, seed: int,
+             days: int, numpy_version: str, effective_config: dict,
+             daily_rows: list) -> int:
+    """Insert one run and its daily rows in a single transaction."""
+    # daily_rows contains tuples in the column order of daily_results
+    # without run_id. Returns the new run_id. Repeated commands append new
+    # runs; earlier runs are kept so they can be compared.
+    created_at = datetime.now().isoformat(timespec="seconds")
+    with conn:
+        cursor = conn.execute(
+            "INSERT INTO simulation_runs (created_at, scenario, policy_name, seed, days, "
+            "numpy_version, config_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (created_at, scenario, policy_name, seed, days, numpy_version,
+             json.dumps(effective_config, sort_keys=True)))
+        run_id = cursor.lastrowid
+        conn.executemany(
+            "INSERT INTO daily_results VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [(run_id, *row) for row in daily_rows])
+    return run_id
