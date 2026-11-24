@@ -1,0 +1,10 @@
+VALIDATION REPORT
+Products file: /Users/riccardocapoferri/Documents/universita/year3/adv_python/inventory-profitability-simulator/data/products.csv
+Sales file:    /Users/riccardocapoferri/Documents/universita/year3/adv_python/inventory-profitability-simulator/data/historical_sales.csv
+Valid products read: 8
+Valid sales records read: 720
+History window: 2026-01-01 to 2026-03-31
+
+OUTCOME: VALID - simulation allowed
+
+No problems found.

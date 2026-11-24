@@ -1,0 +1,106 @@
+INVENTORY AND PROFITABILITY SIMULATION REPORT
+Generated:      2026-11-24T16:28:45
+Configuration:  /Users/riccardocapoferri/Documents/universita/year3/adv_python/inventory-profitability-simulator/storage.toml
+Extension:      storage
+Horizon:        60 days, orders arrive the next morning
+Random seed:    2026
+Random numbers: numpy.random.default_rng(seed) (PCG64), Generator.poisson, NumPy 2.3.5
+Holding cost:   EUR 0.02 per unit per day
+Order cost:     EUR 1.00 per product order
+Saved run ids:  1, 2, 3, 4, 5, 6
+
+1. ASSUMPTIONS
+  - Historical sales are treated as historical demand: we assume the shop had
+    no stock-outs in the past, so no demand was hidden.
+  - Mean daily demand of each product = average of the 90 historical days (2026-01-01 to 2026-03-31).
+  - Future daily demand is Poisson with that mean: whole numbers >= 0 that
+    vary randomly around the average.
+  - All policies and scenarios use the SAME demand array, so the differences
+    come from the policies and not from different random numbers.
+  - Demand that cannot be satisfied is lost (customers do not wait).
+  - Prices and costs are constant. Holding cost is paid on end-of-day stock;
+    the fixed order cost is paid once for each product ordered on a day.
+  - Orders placed on the last day are paid but never arrive: they are shown as
+    outstanding, separate from the final stock. Unsold stock is not COGS.
+
+2. HISTORICAL SALES (SQL summaries)
+  product  name            units  mean/day  revenue  gross_profit
+  P001     Notebook        733    8.14      1832.50  952.90
+  P002     Pen             1383   15.37     1106.40  691.50
+  P003     Pencil          856    9.51      513.60   342.40
+  P004     Folder          377    4.19      678.60   414.70
+  P005     Stapler         113    1.26      734.50   395.50
+  P006     Water bottle    147    1.63      1323.00  735.00
+  P007     Canvas bag      229    2.54      1374.00  801.50
+  P008     Desk organiser  53     0.59      583.00   318.00
+
+  category     products  units  revenue
+  Stationery   3         2972   3452.50
+  Accessories  2         376    2697.00
+  Office       3         543    1996.10
+
+  Best sellers from 2026-01-01 to 2026-03-31:
+  product  name      units  revenue
+  P002     Pen       1383   1106.40
+  P003     Pencil    856    513.60
+  P001     Notebook  733    1832.50
+
+3. POLICY COMPARISON (whole shop, money in EUR)
+  scenario                        policy                                     sold  lost  fill    revenue  gross    holding  ordering  operating  final_stock  outstanding
+  baseline                        fixed_quantity(threshold=20, quantity=40)  2655  0     1.0000  5523.10  3157.60  325.40   68.00     2764.20    335          0
+  baseline                        order_up_to(threshold=20, target=60)       2655  0     1.0000  5523.10  3157.60  354.34   57.00     2746.26    252          43
+  storage_product_id_ascending    fixed_quantity(threshold=20, quantity=40)  2646  9     0.9966  5517.70  3154.00  297.52   86.00     2770.48    263          0
+  storage_product_id_ascending    order_up_to(threshold=20, target=60)       2640  15    0.9944  5511.10  3150.10  304.10   71.00     2775.00    263          0
+  storage_unit_margin_descending  fixed_quantity(threshold=20, quantity=40)  2565  90    0.9661  5468.50  3121.30  299.94   83.00     2738.36    275          25
+  storage_unit_margin_descending  order_up_to(threshold=20, target=60)       2484  171   0.9356  5409.30  3083.60  304.76   68.00     2710.84    263          37
+  final_stock = units in the shop after day 60; outstanding = units ordered on the last day
+
+4. EXTENSION B - STORAGE CAPACITY
+  Capacity: 300 units (initial stock 270 units).
+  Checked before ordering: closing stock + orders <= capacity.
+  product_id_ascending: products are served in id order (P001 first).
+  unit_margin_descending: highest (price - cost) first, ties by id.
+  rule                    policy          lost  fill    operating  vs_unlimited  peak_stock
+  product_id_ascending    fixed_quantity  9     0.9966  2770.48    6.28          300
+  product_id_ascending    order_up_to     15    0.9944  2775.00    28.74         300
+  unit_margin_descending  fixed_quantity  90    0.9661  2738.36    -25.84        300
+  unit_margin_descending  order_up_to     171   0.9356  2710.84    -35.42        300
+  vs_unlimited = operating result minus the same policy with no limit
+
+5. RECOMMENDATION
+  The best option is order_up_to(threshold=20, target=60) with allocation rule product_id_ascending.
+  Operating result EUR 2775.00, fulfilment rate 0.9944, lost units 15.
+  Compared with fixed_quantity in storage_product_id_ascending: EUR 4.52 more, lost units 15 vs 9.
+  Compared with fixed_quantity in storage_unit_margin_descending: EUR 36.64 more, lost units 15 vs 90.
+  Compared with order_up_to in storage_unit_margin_descending: EUR 64.16 more, lost units 15 vs 171.
+  This uses one simulated demand path (60 days, seed 2026): small gaps could change with another seed.
+
+  Detail by product of the recommended option:
+  product  demand  sold  lost  fill    operating  final_stock  outstanding
+  P001     495     495   0     1.0000  593.94     22           0
+  P002     907     892   15    0.9835  394.66     28           0
+  P003     613     613   0     1.0000  197.50     27           0
+  P004     269     269   0     1.0000  251.20     48           0
+  P005     80      80    0     1.0000  232.02     30           0
+  P006     94      94    0     1.0000  422.82     50           0
+  P007     165     165   0     1.0000  531.18     34           0
+  P008     32      32    0     1.0000  151.68     24           0
+
+6. LIMITATIONS
+  - Only one random demand path is simulated: no confidence intervals.
+  - Demand is the same every day on average (no seasons, weekdays or trends)
+    and products are independent (no customer buys a substitute).
+  - If the shop had stock-outs in the past, the mean demand is underestimated.
+  - Lead time is always one day and the supplier never fails.
+  - The same thresholds are used for all products, which sell at very different rates.
+
+7. SAVED SIMULATION RUNS (SQL summary, most recent first)
+  run  created              scenario                        policy                                     seed  days  sold  lost  operating
+  6    2026-11-24T16:28:45  storage_unit_margin_descending  order_up_to(threshold=20, target=60)       2026  60    2484  171   2710.84
+  5    2026-11-24T16:28:45  storage_unit_margin_descending  fixed_quantity(threshold=20, quantity=40)  2026  60    2565  90    2738.36
+  4    2026-11-24T16:28:45  storage_product_id_ascending    order_up_to(threshold=20, target=60)       2026  60    2640  15    2775.00
+  3    2026-11-24T16:28:45  storage_product_id_ascending    fixed_quantity(threshold=20, quantity=40)  2026  60    2646  9     2770.48
+  2    2026-11-24T16:28:45  baseline                        order_up_to(threshold=20, target=60)       2026  60    2655  0     2746.26
+  1    2026-11-24T16:28:45  baseline                        fixed_quantity(threshold=20, quantity=40)  2026  60    2655  0     2764.20
+
+Output files are replaced by each command; runs are added to the database.

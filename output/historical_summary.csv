@@ -1,0 +1,12 @@
+level,key,name,category,days,units_sold,mean_daily_units,revenue,cost_of_goods_sold,gross_profit
+product,P001,Notebook,Stationery,90,733,8.14444444,1832.50,879.60,952.90
+product,P002,Pen,Stationery,90,1383,15.36666667,1106.40,414.90,691.50
+product,P003,Pencil,Stationery,90,856,9.51111111,513.60,171.20,342.40
+product,P004,Folder,Office,90,377,4.18888889,678.60,263.90,414.70
+product,P005,Stapler,Office,90,113,1.25555556,734.50,339.00,395.50
+product,P006,Water bottle,Accessories,90,147,1.63333333,1323.00,588.00,735.00
+product,P007,Canvas bag,Accessories,90,229,2.54444444,1374.00,572.50,801.50
+product,P008,Desk organiser,Office,90,53,0.58888889,583.00,265.00,318.00
+category,Stationery,,Stationery,,2972,,3452.50,,
+category,Accessories,,Accessories,,376,,2697.00,,
+category,Office,,Office,,543,,1996.10,,
