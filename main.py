@@ -6,7 +6,8 @@
 #   import    check the CSV files and store them in the database
 #   summary   print the SQL summaries and write historical_summary.csv
 #             (--start, --end and --top choose the best sellers to show)
-#   simulate  check + import, then compare the policies and write all outputs
+#   simulate  check + import, compare the policies, repeat the comparison with
+#             other seeds (seed check) and write all outputs
 #   runs      print the simulation runs saved in the database
 #
 # This file only reads the command line and prints messages; all the
@@ -27,7 +28,7 @@ from config import load_config
 from common import (ConfigError, DataNotLoadedError, ImportConflictError,
                     InputValidationError, cents_to_euros)
 from reporting import (make_table, write_daily_simulation, write_historical_summary,
-                        write_policy_comparison, write_report)
+                        write_policy_comparison, write_report, write_seed_check)
 from validation import parse_iso_date
 from workflow import check_inputs, run_comparison, validate_and_import
 
@@ -123,12 +124,15 @@ def cmd_simulate(args, config):
         write_historical_summary(conn, folder / "historical_summary.csv")
         write_daily_simulation(comparison, folder / "daily_simulation.csv")
         write_policy_comparison(config, comparison, folder / "policy_comparison.csv")
+        write_seed_check(comparison, config, folder / "seed_check.csv")
         write_report(config, conn, comparison, folder / "report.txt")
     for run in comparison["runs"]:
         shop = run["shop"]
         print(f"  run {run['run_id']:>3}  {run['scenario']:<32} {run['policy'].name:<15}"
               f" operating result EUR {cents_to_euros(shop['operating_result']):>8},"
               f" lost units {shop['lost']}")
+    n = config["seeds_to_check"]
+    print(f"Seed check: {n} seeds ({config['seed']} to {config['seed'] + n - 1}), see report.txt")
     print(f"Outputs written to {folder}")
 
 

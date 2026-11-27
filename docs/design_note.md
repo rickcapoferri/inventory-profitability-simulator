@@ -16,8 +16,8 @@ command line and prints; all the other modules just compute and return values, s
 | `policies.py` | `ReplenishmentPolicy` and its two subclasses |
 | `storage.py` | extension B: allocation rules and capacity check |
 | `simulation.py` | the daily simulation (the same for every policy) and its measures: revenue, COGS, costs, operating result, fill rate, final stock |
-| `workflow.py` | puts the steps together: check + import, then compare the policies |
-| `reporting.py` | writes the CSV files and `report.txt` |
+| `workflow.py` | puts the steps together: check + import, compare the policies, repeat the comparison with other seeds (seed check) |
+| `reporting.py` | writes the CSV files and `report.txt`; chooses the recommended option and summarises the seed check |
 | `common.py` | used by every module: our exceptions, the named tuples, money in cents |
 | `main.py` | command line (the only module that prints) |
 | `tests.py` | all the automated tests |
@@ -98,7 +98,25 @@ what it asked for or what is left:
 
 We compare three scenarios on the same demand: no limit, and one for each rule.
 
-## 7. Assumptions
+## 7. Seed check
+
+The main comparison uses one demand path (seed 2026), and the two best options differ by only
+EUR 4.52. To see if the recommendation is stable, `run_seed_check` repeats the whole comparison
+with `seeds_to_check` seeds (2026 to 2045). The rules are the same as in the main comparison: for
+each seed **one** demand array is shared by all six options, and no other parameter changes. We do
+not search for better parameters (that would be extension C): we only check the ranking.
+
+We save the daily rows in the database only for the main seed. The other runs keep only the shop
+totals (`seed_check.csv` and section 6 of the report), so the submitted database stays small.
+
+Result with the sample data: the rule `product_id_ascending` is part of the best option in 20 of
+20 seeds, so the choice of the allocation rule is stable. The two policies instead win 10 seeds
+each, and their mean operating results differ by EUR 1.72 (fixed quantity 2729.48, order-up-to
+2727.76), while one option goes from about EUR 2530 to EUR 2890 from one seed to another. So the
+difference between the two policies is too small to be reliable; fixed quantity loses fewer units
+on average (6.5 against 13.7).
+
+## 8. Assumptions
 
 * Past sales = past demand (no stock-outs in the history).
 * Daily demand is Poisson with the historical mean.
@@ -106,15 +124,16 @@ We compare three scenarios on the same demand: no limit, and one for each rule.
 * Prices and costs do not change; holding cost on end-of-day stock; one fixed cost per product order.
 * Orders of the last day are paid but reported as outstanding, not as stock.
 
-## 8. Limitations
+## 9. Limitations
 
-1. Only one random demand path: small differences between policies may not be reliable.
+1. The seed check uses only 20 seeds and no confidence intervals: it shows if the ranking
+   changes, not how precise the means are.
 2. No seasons, weekdays or trends; products are independent.
 3. If the shop had stock-outs in the past, mean demand is too low.
 4. The same thresholds for all products, even though P002 sells ~15 a day and P008 less than 1.
 5. The allocation rules are simple "greedy" rules, not the best possible allocation.
 
-## 9. Code style
+## 10. Code style
 
 We followed the style of the course notebooks: type hints on parameters and return values, short
 docstrings with `#` comments for the details, classes with `__init__(...) -> None` and annotated

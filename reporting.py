@@ -141,23 +141,157 @@ def write_policy_comparison(config: dict, comparison: dict, path) -> None:
 
 # Text report
 
-def candidate_runs(comparison: dict, config: dict) -> list:
+def candidate_runs(runs: list, config: dict) -> list:
     """The runs we can recommend."""
     # With the storage extension the warehouse really has a limit, so we only
     # choose among the storage scenarios; otherwise among the baseline runs.
+    # 'runs' can be the main runs or the runs of one seed of the seed check.
     if config["capacity"] is not None:
-        return [run for run in comparison["runs"] if run["scenario"] != "baseline"]
-    return [run for run in comparison["runs"] if run["scenario"] == "baseline"]
+        return [run for run in runs if run["scenario"] != "baseline"]
+    return [run for run in runs if run["scenario"] == "baseline"]
 
 
-def best_run(comparison: dict, config: dict) -> dict:
+def best_run(runs: list, config: dict) -> dict:
     """The run with the highest operating result among the candidate runs."""
-    candidates = candidate_runs(comparison, config)
+    # with the same result, the first one in the list is kept
+    candidates = candidate_runs(runs, config)
     best = candidates[0]
     for run in candidates:
         if run["shop"]["operating_result"] > best["shop"]["operating_result"]:
             best = run
     return best
+
+
+# Seed check
+
+def seed_winners(comparison: dict, config: dict) -> dict:
+    """{seed: best run of that seed}, chosen with the same rule as the recommendation."""
+    winners = {}
+    for seed in sorted(set(row["seed"] for row in comparison["seed_check"])):
+        same_seed = [row for row in comparison["seed_check"] if row["seed"] == seed]
+        winners[seed] = best_run(same_seed, config)
+    return winners
+
+
+def seed_check_summary(comparison: dict, config: dict) -> list:
+    """One dictionary per option (scenario + policy) with its results over all the seeds."""
+    # mean, min and max operating result in cents (the mean is rounded to the
+    # nearest cent), mean lost units, and "wins" = in how many seeds the option
+    # was the best. wins is None for an option we never recommend (the
+    # baseline, when the storage extension is selected).
+    winners = seed_winners(comparison, config)
+    candidates = []
+    for run in candidate_runs(comparison["runs"], config):
+        candidates.append((run["scenario"], run["policy"].name))
+    summary = []
+    for run in comparison["runs"]:          # same order as the main comparison
+        option = (run["scenario"], run["policy"].name)
+        results = []
+        lost = []
+        for row in comparison["seed_check"]:
+            if (row["scenario"], row["policy"].name) == option:
+                results.append(row["shop"]["operating_result"])
+                lost.append(row["shop"]["lost"])
+        results = np.array(results)
+        wins = None
+        if option in candidates:
+            wins = 0
+            for best in winners.values():
+                if (best["scenario"], best["policy"].name) == option:
+                    wins += 1
+        summary.append({"scenario": run["scenario"], "policy": run["policy"].name,
+                        "mean": int(round(results.mean())), "min": int(results.min()),
+                        "max": int(results.max()), "mean_lost": float(np.mean(lost)),
+                        "wins": wins})
+    return summary
+
+
+def write_seed_check(comparison: dict, config: dict, path) -> None:
+    """seed_check.csv: shop totals of every option for every seed of the seed check."""
+    # best_of_seed = "yes" for the option with the highest operating result of
+    # that seed (among the options we can recommend)
+    winners = seed_winners(comparison, config)
+    header = ["seed", "scenario", "policy"] + MEASURES + ["best_of_seed"]
+    rows = []
+    for row in comparison["seed_check"]:
+        best = ""
+        if row is winners[row["seed"]]:
+            best = "yes"
+        rows.append([row["seed"], row["scenario"], row["policy"].name]
+                    + measure_values(row["shop"]) + [best])
+    write_csv(path, header, rows)
+
+
+def seed_check_lines(comparison: dict, config: dict, best: dict, section: int) -> list:
+    """The SEED CHECK section of report.txt."""
+    summary = seed_check_summary(comparison, config)
+    winners = seed_winners(comparison, config)
+    n = config["seeds_to_check"]
+    first = config["seed"]
+    lines = [
+        f"{section}. SEED CHECK ({n} seeds: {first} to {first + n - 1})",
+        f"  The comparison is repeated with {n} seeds; seed {first} is the one above.",
+        "  In each seed every option gets the same demand array; all the other",
+        "  parameters do not change. Only the totals are kept (seed_check.csv), the",
+        f"  daily rows are saved in the database only for seed {first}. Money in EUR.",
+    ]
+    rows = []
+    for option in summary:
+        wins = "-"
+        if option["wins"] is not None:
+            wins = f"{option['wins']}/{n}"
+        rows.append([option["scenario"], option["policy"], cents_to_euros(option["mean"]),
+                     cents_to_euros(option["min"]), cents_to_euros(option["max"]),
+                     f"{option['mean_lost']:.1f}", wins])
+    lines += make_table(["scenario", "policy", "mean", "min", "max", "mean_lost", "best_in"],
+                        rows)
+    lines.append("  mean/min/max = operating result over the seeds; best_in = seeds in which")
+    lines.append("  the option had the highest operating result (- = option not recommended)")
+    lines.append("")
+
+    # how often the recommended option, its rule and its policy were the best
+    option_wins = 0
+    rule_wins = 0
+    policy_wins = 0
+    for winner in winners.values():
+        if winner["scenario"] == best["scenario"]:
+            rule_wins += 1
+        if winner["policy"].name == best["policy"].name:
+            policy_wins += 1
+        if winner["scenario"] == best["scenario"] and winner["policy"].name == best["policy"].name:
+            option_wins += 1
+    recommended = None
+    highest = None
+    for option in summary:
+        if option["scenario"] == best["scenario"] and option["policy"] == best["policy"].name:
+            recommended = option
+        if option["wins"] is not None and (highest is None or option["mean"] > highest["mean"]):
+            highest = option
+
+    lines.append(f"  The recommended option was the best in {option_wins} of {n} seeds.")
+    if best["rule"] is not None:
+        lines.append(f"  Its allocation rule ({best['rule']}) was used by the best option "
+                     f"in {rule_wins} of {n} seeds.")
+    lines.append(f"  Its policy ({best['policy'].name}) was the best in {policy_wins} of {n} seeds.")
+    lines.append(f"  From one seed to another its operating result goes from EUR "
+                 f"{cents_to_euros(recommended['min'])} to EUR {cents_to_euros(recommended['max'])}.")
+    if highest is recommended:
+        lines.append(f"  It also has the highest mean operating result "
+                     f"(EUR {cents_to_euros(recommended['mean'])}).")
+    else:
+        gap = highest["mean"] - recommended["mean"]
+        lines.append(f"  The highest mean is {highest['policy']} in {highest['scenario']}: "
+                     f"EUR {cents_to_euros(highest['mean'])}, EUR {cents_to_euros(gap)} more")
+        lines.append(f"  than the recommended option (EUR {cents_to_euros(recommended['mean'])}).")
+    if option_wins * 2 > n:
+        lines.append("  Conclusion: the recommendation is confirmed in most seeds.")
+    else:
+        lines.append("  Conclusion: the recommended option is NOT the best in most seeds, so")
+        lines.append("  the choice between the closest options depends on the random demand.")
+    if best["rule"] is not None and rule_wins == n:
+        lines.append(f"  The allocation rule {best['rule']} is the better rule in every seed.")
+    lines.append("")
+    return lines
 
 
 def build_report(config: dict, conn, comparison: dict) -> str:
@@ -170,7 +304,7 @@ def build_report(config: dict, conn, comparison: dict) -> str:
         f"Configuration:  {config['config_file']}",
         f"Extension:      {config['extension'] or 'none (core only)'}",
         f"Horizon:        {config['days']} days, orders arrive the next morning",
-        f"Random seed:    {config['seed']}",
+        f"Random seed:    {config['seed']} (seed check: {config['seeds_to_check']} seeds)",
         f"Random numbers: {RNG_DESCRIPTION}, NumPy {np.__version__}",
         f"Holding cost:   EUR {cents_to_euros(config['holding_cost'])} per unit per day",
         f"Order cost:     EUR {cents_to_euros(config['order_cost'])} per product order",
@@ -256,7 +390,7 @@ def build_report(config: dict, conn, comparison: dict) -> str:
         lines.append("")
         section = 5
 
-    best = best_run(comparison, config)
+    best = best_run(comparison["runs"], config)
     s = best["shop"]
     choice = str(best["policy"])
     if best["rule"] is not None:
@@ -267,14 +401,14 @@ def build_report(config: dict, conn, comparison: dict) -> str:
         f"  Operating result EUR {cents_to_euros(s['operating_result'])}, "
         f"fulfilment rate {format_rate(s['fill_rate'], 'n/a')}, lost units {s['lost']}.",
     ]
-    for run in candidate_runs(comparison, config):   # compare like with like
+    for run in candidate_runs(comparison["runs"], config):   # compare like with like
         if run is not best:
             gap = s["operating_result"] - run["shop"]["operating_result"]
             lines.append(f"  Compared with {run['policy'].name} in {run['scenario']}: "
                          f"EUR {cents_to_euros(gap)} more, lost units {s['lost']} "
                          f"vs {run['shop']['lost']}.")
-    lines.append(f"  This uses one simulated demand path ({config['days']} days, seed "
-                 f"{config['seed']}): small gaps could change with another seed.")
+    lines.append(f"  This uses the demand of seed {config['seed']} ({config['days']} days); "
+                 f"section {section + 1} repeats it with {config['seeds_to_check']} seeds.")
     lines.append("")
     lines.append("  Detail by product of the recommended option:")
     rows = []
@@ -286,16 +420,19 @@ def build_report(config: dict, conn, comparison: dict) -> str:
                          "final_stock", "outstanding"], rows)
     lines.append("")
 
+    lines += seed_check_lines(comparison, config, best, section + 1)
+
     lines += [
-        f"{section + 1}. LIMITATIONS",
-        "  - Only one random demand path is simulated: no confidence intervals.",
+        f"{section + 2}. LIMITATIONS",
+        f"  - The seed check uses only {config['seeds_to_check']} seeds: it shows if the best",
+        "    option changes, but it does not give precise confidence intervals.",
         "  - Demand is the same every day on average (no seasons, weekdays or trends)",
         "    and products are independent (no customer buys a substitute).",
         "  - If the shop had stock-outs in the past, the mean demand is underestimated.",
         "  - Lead time is always one day and the supplier never fails.",
         "  - The same thresholds are used for all products, which sell at very different rates.",
         "",
-        f"{section + 2}. SAVED SIMULATION RUNS (SQL summary, most recent first)",
+        f"{section + 3}. SAVED SIMULATION RUNS (SQL summary, most recent first)",
     ]
     rows = []
     for row in db.runs_summary(conn, 12):

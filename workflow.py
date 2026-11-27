@@ -1,4 +1,5 @@
-"""The main steps of the program: check and import the data, compare the policies."""
+"""The main steps of the program: check and import the data, compare the policies,
+repeat the comparison with other seeds (seed check)."""
 
 # These functions do not print anything and do not read the command line,
 # so the tests can call them in the same way as main.py does.
@@ -101,5 +102,27 @@ def run_comparison(config: dict, conn) -> dict:
                          "capacity": capacity, "policy": policy, "result": result,
                          "by_product": by_product, "shop": shop})
 
+    seed_check = run_seed_check(config, products, means)
     return {"products": products, "history_days": len(history), "means": means,
-            "demand": demand, "runs": runs}
+            "demand": demand, "runs": runs, "seed_check": seed_check}
+
+
+def run_seed_check(config: dict, products: list, means) -> list:
+    """Repeat the whole comparison with several seeds, to see if the best option changes."""
+    # Seeds: seed, seed + 1, ..., seed + seeds_to_check - 1 (the first one is
+    # the seed of the main comparison). For each seed ONE demand array is
+    # generated and shared by every policy and scenario, as in run_comparison().
+    # All the other parameters are the same. We keep only the shop totals:
+    # the daily rows of these runs are not saved, so the database stays small.
+    rows = []
+    first_seed = config["seed"]
+    for seed in range(first_seed, first_seed + config["seeds_to_check"]):
+        demand = generate_demand(means, config["days"], seed)
+        for scenario, capacity, rule in build_scenarios(config):
+            for policy in policies_from_config(config):
+                result = run_simulation(products, demand, policy, config["holding_cost"],
+                                        config["order_cost"], scenario, capacity, rule)
+                by_product, shop = compute_metrics(result, products)
+                rows.append({"seed": seed, "scenario": scenario, "rule": rule,
+                             "policy": policy, "shop": shop})
+    return rows

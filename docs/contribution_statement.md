@@ -15,8 +15,8 @@ the database and the tests are not anyone's only contribution.
 | Antonio Natale | CSV validation and validation report: `validation.py`, CSV validation tests in `tests.py` | Filippo Ferro's database |
 | Filippo Ferro | Database schema, import without duplicates, SQL summaries: `database.py`, database tests in `tests.py` | Gabriele Grisafi's demand and policies |
 | Gabriele Grisafi | Demand with NumPy and the policy classes (inheritance): `demand.py`, `policies.py`, policy tests in `tests.py` | Riccardo Capoferri's simulation |
-| Riccardo Capoferri | Daily simulation, metrics and workflow: `simulation.py`, `workflow.py`, simulation tests in `tests.py` | Silvia Passaro's extension |
-| Silvia Passaro | Extension B (storage) and output files: `storage.py`, `reporting.py`, storage and command-line tests in `tests.py` | Marco Vito Zingrillo's configuration |
+| Riccardo Capoferri | Daily simulation, metrics and workflow: `simulation.py`, `workflow.py` (also the seed check, `run_seed_check`), simulation and seed check tests in `tests.py` | Silvia Passaro's extension |
+| Silvia Passaro | Extension B (storage) and output files: `storage.py`, `reporting.py` (also `seed_check.csv` and the seed check section of the report), storage and command-line tests in `tests.py` | Marco Vito Zingrillo's configuration |
 
 ## Other work
 
@@ -34,6 +34,8 @@ the database and the tests are not anyone's only contribution.
 * The same demand array for every policy and scenario.
 * Base policy class with the common threshold rule; subclasses only decide how much to order.
 * Import rule: identical records are skipped, different records cancel the whole import.
+* After the teacher's answer: repeat the comparison with more seeds (seed check), with the same
+  demand for every option in each seed; daily rows saved only for the main seed.
 
 ## Review notes
 

@@ -1,9 +1,9 @@
 INVENTORY AND PROFITABILITY SIMULATION REPORT
-Generated:      2026-11-24T16:28:45
+Generated:      2026-11-27T14:54:38
 Configuration:  /Users/riccardocapoferri/Documents/universita/year3/adv_python/inventory-profitability-simulator/storage.toml
 Extension:      storage
 Horizon:        60 days, orders arrive the next morning
-Random seed:    2026
+Random seed:    2026 (seed check: 20 seeds)
 Random numbers: numpy.random.default_rng(seed) (PCG64), Generator.poisson, NumPy 2.3.5
 Holding cost:   EUR 0.02 per unit per day
 Order cost:     EUR 1.00 per product order
@@ -73,7 +73,7 @@ Saved run ids:  1, 2, 3, 4, 5, 6
   Compared with fixed_quantity in storage_product_id_ascending: EUR 4.52 more, lost units 15 vs 9.
   Compared with fixed_quantity in storage_unit_margin_descending: EUR 36.64 more, lost units 15 vs 90.
   Compared with order_up_to in storage_unit_margin_descending: EUR 64.16 more, lost units 15 vs 171.
-  This uses one simulated demand path (60 days, seed 2026): small gaps could change with another seed.
+  This uses the demand of seed 2026 (60 days); section 6 repeats it with 20 seeds.
 
   Detail by product of the recommended option:
   product  demand  sold  lost  fill    operating  final_stock  outstanding
@@ -86,21 +86,47 @@ Saved run ids:  1, 2, 3, 4, 5, 6
   P007     165     165   0     1.0000  531.18     34           0
   P008     32      32    0     1.0000  151.68     24           0
 
-6. LIMITATIONS
-  - Only one random demand path is simulated: no confidence intervals.
+6. SEED CHECK (20 seeds: 2026 to 2045)
+  The comparison is repeated with 20 seeds; seed 2026 is the one above.
+  In each seed every option gets the same demand array; all the other
+  parameters do not change. Only the totals are kept (seed_check.csv), the
+  daily rows are saved in the database only for seed 2026. Money in EUR.
+  scenario                        policy          mean     min      max      mean_lost  best_in
+  baseline                        fixed_quantity  2718.11  2512.10  2876.74  1.0        -
+  baseline                        order_up_to     2698.97  2487.68  2860.72  1.0        -
+  storage_product_id_ascending    fixed_quantity  2729.48  2518.36  2892.58  6.5        10/20
+  storage_product_id_ascending    order_up_to     2727.76  2531.26  2887.80  13.7       10/20
+  storage_unit_margin_descending  fixed_quantity  2696.78  2507.04  2862.58  73.2       0/20
+  storage_unit_margin_descending  order_up_to     2662.59  2462.86  2853.84  164.9      0/20
+  mean/min/max = operating result over the seeds; best_in = seeds in which
+  the option had the highest operating result (- = option not recommended)
+
+  The recommended option was the best in 10 of 20 seeds.
+  Its allocation rule (product_id_ascending) was used by the best option in 20 of 20 seeds.
+  Its policy (order_up_to) was the best in 10 of 20 seeds.
+  From one seed to another its operating result goes from EUR 2531.26 to EUR 2887.80.
+  The highest mean is fixed_quantity in storage_product_id_ascending: EUR 2729.48, EUR 1.72 more
+  than the recommended option (EUR 2727.76).
+  Conclusion: the recommended option is NOT the best in most seeds, so
+  the choice between the closest options depends on the random demand.
+  The allocation rule product_id_ascending is the better rule in every seed.
+
+7. LIMITATIONS
+  - The seed check uses only 20 seeds: it shows if the best
+    option changes, but it does not give precise confidence intervals.
   - Demand is the same every day on average (no seasons, weekdays or trends)
     and products are independent (no customer buys a substitute).
   - If the shop had stock-outs in the past, the mean demand is underestimated.
   - Lead time is always one day and the supplier never fails.
   - The same thresholds are used for all products, which sell at very different rates.
 
-7. SAVED SIMULATION RUNS (SQL summary, most recent first)
+8. SAVED SIMULATION RUNS (SQL summary, most recent first)
   run  created              scenario                        policy                                     seed  days  sold  lost  operating
-  6    2026-11-24T16:28:45  storage_unit_margin_descending  order_up_to(threshold=20, target=60)       2026  60    2484  171   2710.84
-  5    2026-11-24T16:28:45  storage_unit_margin_descending  fixed_quantity(threshold=20, quantity=40)  2026  60    2565  90    2738.36
-  4    2026-11-24T16:28:45  storage_product_id_ascending    order_up_to(threshold=20, target=60)       2026  60    2640  15    2775.00
-  3    2026-11-24T16:28:45  storage_product_id_ascending    fixed_quantity(threshold=20, quantity=40)  2026  60    2646  9     2770.48
-  2    2026-11-24T16:28:45  baseline                        order_up_to(threshold=20, target=60)       2026  60    2655  0     2746.26
-  1    2026-11-24T16:28:45  baseline                        fixed_quantity(threshold=20, quantity=40)  2026  60    2655  0     2764.20
+  6    2026-11-27T14:54:38  storage_unit_margin_descending  order_up_to(threshold=20, target=60)       2026  60    2484  171   2710.84
+  5    2026-11-27T14:54:38  storage_unit_margin_descending  fixed_quantity(threshold=20, quantity=40)  2026  60    2565  90    2738.36
+  4    2026-11-27T14:54:38  storage_product_id_ascending    order_up_to(threshold=20, target=60)       2026  60    2640  15    2775.00
+  3    2026-11-27T14:54:38  storage_product_id_ascending    fixed_quantity(threshold=20, quantity=40)  2026  60    2646  9     2770.48
+  2    2026-11-27T14:54:38  baseline                        order_up_to(threshold=20, target=60)       2026  60    2655  0     2746.26
+  1    2026-11-27T14:54:38  baseline                        fixed_quantity(threshold=20, quantity=40)  2026  60    2655  0     2764.20
 
 Output files are replaced by each command; runs are added to the database.

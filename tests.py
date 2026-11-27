@@ -28,10 +28,12 @@ from config import check_config, load_config
 from demand import estimate_means, generate_demand, history_matrix
 from main import main
 from policies import FixedQuantityPolicy, OrderUpToPolicy, ReplenishmentPolicy
+from reporting import best_run, seed_check_summary, seed_winners
 from simulation import compute_metrics, daily_rows, run_simulation
 from storage import allocate, product_id_order, unit_margin_order
 from validation import (parse_iso_date, parse_non_negative_int, parse_positive_money,
                         validate_inputs)
+from workflow import run_seed_check
 
 FOLDER = Path(__file__).resolve().parent   # the project folder
 DATA = FOLDER / "data"                      # input files
@@ -218,6 +220,19 @@ def test_database_and_output_paths_of_the_wrong_kind():
     assert "output_directory is a file" in config_error(data)
 
 
+def test_seed_check_setting():
+    data = storage_toml()
+    data["simulation"]["seeds_to_check"] = 0
+    assert "seeds_to_check must be >= 1" in config_error(data)
+
+    data = storage_toml()
+    del data["simulation"]["seeds_to_check"]
+    assert "[simulation] missing key 'seeds_to_check'" in config_error(data)
+
+    config = load_config(STORAGE_TOML)
+    assert config["seeds_to_check"] == 20
+
+
 def test_all_problems_are_reported_together():
     data = storage_toml()
     data["simulation"]["days"] = 0
@@ -239,6 +254,7 @@ test_missing_table_and_other_extension()
 test_unknown_keys()
 test_storage_settings()
 test_database_and_output_paths_of_the_wrong_kind()
+test_seed_check_setting()
 test_all_problems_are_reported_together()
 print("config tests passed")
 
@@ -844,6 +860,104 @@ test_huge_capacity_is_like_no_limit()
 print("storage tests passed")
 
 
+# Seed check (workflow.py and reporting.py)
+
+# Two products and a small warehouse, so that the two allocation rules give
+# different results: product_id_ascending serves A first, unit_margin_descending
+# serves B first (margin 2.00 against 0.50).
+SEED_PRODUCTS = [make_product("A", cost=100, price=150, stock=30),
+                 make_product("B", cost=100, price=300, stock=30)]
+SEED_MEANS = np.array([6.0, 3.0])
+
+
+def seed_check_config(seeds: int) -> dict:
+    """The settings of storage.toml with 30 days, capacity 80 and 'seeds' seeds."""
+    data = storage_toml()
+    data["simulation"]["days"] = 30
+    data["simulation"]["seeds_to_check"] = seeds
+    data["storage"]["capacity_units"] = 80
+    return check_config(data, STORAGE_TOML)
+
+
+def seed_check_comparison(seeds: int) -> dict:
+    """A comparison dictionary like the one of run_comparison(), for the tests."""
+    config = seed_check_config(seeds)
+    rows = run_seed_check(config, SEED_PRODUCTS, SEED_MEANS)
+    main_runs = [row for row in rows if row["seed"] == config["seed"]]
+    return {"runs": main_runs, "seed_check": rows}
+
+
+def test_seed_check_uses_one_demand_per_seed():
+    config = seed_check_config(5)
+    rows = run_seed_check(config, SEED_PRODUCTS, SEED_MEANS)
+    assert len(rows) == 5 * 6                    # 5 seeds x 3 scenarios x 2 policies
+    seeds = [row["seed"] for row in rows]
+    assert sorted(set(seeds)) == [2026, 2027, 2028, 2029, 2030]
+    for seed in set(seeds):
+        expected = int(generate_demand(SEED_MEANS, 30, seed).sum())
+        for row in rows:
+            if row["seed"] == seed:
+                assert row["shop"]["demand"] == expected   # same demand for every option
+
+
+def test_first_seed_is_the_main_comparison():
+    config = seed_check_config(3)
+    rows = run_seed_check(config, SEED_PRODUCTS, SEED_MEANS)
+    demand = generate_demand(SEED_MEANS, 30, 2026)
+    policy = FixedQuantityPolicy(20, 40)
+    result = run_simulation(SEED_PRODUCTS, demand, policy, config["holding_cost"],
+                            config["order_cost"], "storage_product_id_ascending", 80,
+                            "product_id_ascending")
+    by_product, shop = compute_metrics(result, SEED_PRODUCTS)
+    found = 0
+    for row in rows:
+        if (row["seed"] == 2026 and row["scenario"] == "storage_product_id_ascending"
+                and row["policy"].name == "fixed_quantity"):
+            assert row["shop"] == shop
+            found += 1
+    assert found == 1
+
+
+def test_every_seed_has_one_best_option():
+    comparison = seed_check_comparison(6)
+    config = seed_check_config(6)
+    winners = seed_winners(comparison, config)
+    assert sorted(winners) == [2026, 2027, 2028, 2029, 2030, 2031]
+    for seed, best in winners.items():
+        assert best["scenario"] != "baseline"     # with extension B we recommend a storage scenario
+        for row in comparison["seed_check"]:
+            if row["seed"] == seed and row["scenario"] != "baseline":
+                assert row["shop"]["operating_result"] <= best["shop"]["operating_result"]
+    summary = seed_check_summary(comparison, config)
+    assert len(summary) == 6
+    total_wins = 0
+    for option in summary:
+        if option["scenario"] == "baseline":
+            assert option["wins"] is None
+        else:
+            total_wins += option["wins"]
+        assert option["min"] <= option["mean"] <= option["max"]
+    assert total_wins == 6
+
+
+def test_one_seed_gives_the_main_recommendation():
+    # boundary: seeds_to_check = 1 means "only the main seed"
+    comparison = seed_check_comparison(1)
+    config = seed_check_config(1)
+    assert len(comparison["seed_check"]) == 6
+    winners = seed_winners(comparison, config)
+    assert winners[2026] is best_run(comparison["runs"], config)
+    for option in seed_check_summary(comparison, config):
+        assert option["min"] == option["mean"] == option["max"]
+
+
+test_seed_check_uses_one_demand_per_seed()
+test_first_seed_is_the_main_comparison()
+test_every_seed_has_one_best_option()
+test_one_seed_gives_the_main_recommendation()
+print("seed check tests passed")
+
+
 # Whole program through the command line (main.py)
 
 def read_csv(path) -> list:
@@ -857,14 +971,25 @@ def test_simulate_writes_all_the_outputs():
         code, text = run_cli("simulate", "--config", str(root / "storage.toml"))
         assert code == 0, text
         for name in ["historical_summary.csv", "daily_simulation.csv", "policy_comparison.csv",
-                     "validation_report.txt", "report.txt"]:
+                     "validation_report.txt", "report.txt", "seed_check.csv"]:
             assert (root / "output" / name).is_file(), name
         # 3 scenarios x 2 policies x 60 days x 8 products
         assert len(read_csv(root / "output" / "daily_simulation.csv")) == 6 * 60 * 8
         report = (root / "output" / "report.txt").read_text(encoding="utf-8")
         for title in ["ASSUMPTIONS", "POLICY COMPARISON", "STORAGE CAPACITY",
-                      "RECOMMENDATION", "LIMITATIONS"]:
+                      "RECOMMENDATION", "SEED CHECK", "LIMITATIONS"]:
             assert title in report
+        # seed check: 20 seeds x 6 options; the first seed gives the same
+        # operating results as the main comparison
+        seed_rows = read_csv(root / "output" / "seed_check.csv")
+        assert len(seed_rows) == 20 * 6
+        main = {}
+        for row in read_csv(root / "output" / "policy_comparison.csv"):
+            if row["level"] == "SHOP":
+                main[(row["scenario"], row["policy"])] = row["operating_result"]
+        for row in seed_rows:
+            if row["seed"] == "2026":
+                assert row["operating_result"] == main[(row["scenario"], row["policy"])]
 
 
 def test_same_seed_gives_same_results():

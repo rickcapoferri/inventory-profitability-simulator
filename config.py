@@ -15,7 +15,7 @@ from storage import ALLOCATION_RULES
 # a typo such as "dasy = 60" is not silently ignored.
 ALLOWED_KEYS = {
     "files": ["products", "historical_sales", "database", "output_directory"],
-    "simulation": ["days", "seed", "currency"],
+    "simulation": ["days", "seed", "seeds_to_check", "currency"],
     "demand": ["model", "mean_source"],
     "costs": ["holding_per_unit_per_day", "fixed_per_product_order"],
     "policies": ["fixed_quantity", "order_up_to"],
@@ -121,6 +121,8 @@ def check_config(data: dict, config_file: Path) -> dict:
     simulation = get_table(data, "simulation", errors)
     config["days"] = read_int(simulation, "simulation", "days", errors, minimum=1)
     config["seed"] = read_int(simulation, "simulation", "seed", errors, minimum=0)
+    config["seeds_to_check"] = read_int(simulation, "simulation", "seeds_to_check", errors,
+                                        minimum=1)
     read_choice(simulation, "simulation", "currency", errors, ["EUR"])
 
     demand = get_table(data, "demand", errors)

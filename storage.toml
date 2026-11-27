@@ -10,6 +10,8 @@ output_directory = "output"                     # the output files are written h
 [simulation]
 days = 60          # days to simulate (integer >= 1)
 seed = 2026        # random seed: same seed = same demand = same results
+seeds_to_check = 20   # seed check: the comparison is repeated with the seeds
+                      # seed, seed + 1, ... (20 seeds) to see if the best option changes
 currency = "EUR"   # only EUR is supported
 
 [demand]
